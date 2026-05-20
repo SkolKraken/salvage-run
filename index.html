@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Salvage Run</title>
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <h1>SALVAGE RUN</h1>
+        <span class="tag">vertical slice</span>
+      </header>
+
+      <div id="turn-banner" class="banner player">YOUR TURN</div>
+
+      <div class="board-wrap">
+        <canvas id="board" width="768" height="768"></canvas>
+
+        <div id="deploy" class="overlay">
+          <div class="deploy-title">CONFIGURE YOUR LANCE</div>
+          <div class="deploy-slots" id="deploy-slots"></div>
+          <div class="deploy-note">Click a slot to cycle its mech.</div>
+          <button id="deploy-go" class="btn primary">DEPLOY LANCE</button>
+        </div>
+
+        <div id="overlay" class="overlay hidden">
+          <div class="overlay-text" id="overlay-text">VICTORY</div>
+          <div class="overlay-sub" id="overlay-sub"></div>
+          <button id="overlay-restart" class="btn primary">New Run</button>
+        </div>
+
+        <div id="salvage" class="overlay hidden">
+          <div class="bay">
+            <div class="bay-title">SALVAGE BAY</div>
+            <div class="bay-sub" id="bay-sub">Mission cleared</div>
+            <div class="bay-res">
+              <span class="res-pill">SALVAGE <b id="bay-salvage">0</b></span>
+              <span class="res-pill">CORES <b id="bay-cores">0</b></span>
+            </div>
+            <div id="bay-mechs"></div>
+            <div id="bay-rearm" class="bay-rearm hidden"></div>
+            <button id="bay-deploy" class="btn primary">Deploy</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="rosters">
+        <div class="roster-label">YOUR LANCE</div>
+        <div class="roster" id="roster-player"></div>
+        <div class="roster-label">HOSTILES</div>
+        <div class="roster" id="roster-enemy"></div>
+      </div>
+
+      <div class="weapons" id="weapons"></div>
+
+      <div class="legend">
+        <span class="leg"><i class="sw wreckage"></i>Wreckage &mdash; blocks moves &amp; fire</span>
+        <span class="leg"><i class="sw cover"></i>Cover &mdash; &minus;1 damage</span>
+        <span class="leg"><i class="sw fire"></i>Fire &mdash; 1 dmg + max heat</span>
+        <span class="leg"><i class="sw pit"></i>Pit &mdash; can't fire from it; only adjacent foes hit</span>
+        <span class="leg"><i class="sw water"></i>Water &mdash; stops you, resets heat</span>
+      </div>
+
+      <p id="hint" class="hint">Configure your lance to begin.</p>
+
+      <div class="controls">
+        <button id="btn-end" class="btn">End Turn</button>
+        <button id="btn-restart" class="btn ghost">Restart</button>
+      </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
