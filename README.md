@@ -2,7 +2,9 @@
 
 A turn-based mech tactics game in the browser. Telegraphed enemies, heat-as-resource, deterministic combat, and a 3-mission roguelite loop with carried damage between missions.
 
-## Play
+**Play it: [salvage-run.vlachtalk.com](https://salvage-run.vlachtalk.com)**
+
+## Run locally
 
 ```bash
 npm install
