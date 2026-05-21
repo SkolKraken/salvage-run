@@ -18,6 +18,7 @@ import {
   eq,
   manhattan,
   type ArchetypeId,
+  type EnemyKind,
   type Vec,
   type Unit,
 } from "./game";
@@ -29,11 +30,13 @@ const WIND_UP = 0.15;
 const DYING_TIME = 0.7;
 
 type Palette = { body: string; dark: string; accent: string };
-const PAL: Record<ArchetypeId | "enemy", Palette> = {
+const PAL: Record<ArchetypeId | EnemyKind, Palette> = {
   vanguard: { body: "#38bdf8", dark: "#1c5f80", accent: "#e0f2fe" },
   skirmisher: { body: "#4ade80", dark: "#1f6b3e", accent: "#dcfce7" },
   juggernaut: { body: "#a78bfa", dark: "#4c3f7a", accent: "#ede9fe" },
-  enemy: { body: "#f87171", dark: "#8f3838", accent: "#fee2e2" },
+  stalker: { body: "#f87171", dark: "#8f3838", accent: "#fee2e2" },
+  striker: { body: "#fb7185", dark: "#9f1239", accent: "#fecdd3" },
+  bruiser: { body: "#b91c1c", dark: "#5a0e0e", accent: "#fecaca" },
 };
 
 // --- DOM ---
@@ -72,6 +75,7 @@ document.documentElement.style.setProperty("--board", `${SIZE}px`);
 
 // --- State ---
 const game = new Game();
+(window as unknown as { __game: Game }).__game = game;
 let busy = false;
 let time = 0;
 let hover: Vec | null = null;
@@ -129,7 +133,8 @@ interface DyingRecord {
 const dying: DyingRecord[] = [];
 
 function palFor(u: Unit): Palette {
-  return u.team === "enemy" ? PAL.enemy : PAL[u.archetype!];
+  if (u.team === "enemy") return PAL[u.enemyKind ?? "stalker"];
+  return PAL[u.archetype!];
 }
 
 function center(x: number, y: number): { x: number; y: number } {
@@ -426,12 +431,13 @@ function endTurnFlow(): void {
         const victimKilled = !!res.victim && res.victim.hp === 0;
         const dmg = res.damage;
         const hitting = !!res.victim;
+        const knockTo = res.knockTo;
         if (victimKilled && victimId !== undefined) noteDying(victimId);
         projectiles.push({
-          kind: "tracer",
+          kind: projectileKindFor(e.weapons[0]),
           from: { ...e.pos },
           to: victimPos,
-          color: PAL.enemy.body,
+          color: palFor(e).body,
           life: 0.2,
           maxLife: 0.2,
           done: false,
@@ -444,7 +450,16 @@ function endTurnFlow(): void {
               );
               flashUnit(victimId);
               shake += Math.max(2, dmg * 1.5);
-              if (victimKilled) spawnExplosion(victimPos);
+              if (knockTo) {
+                const r = rstate.get(victimId);
+                if (r) {
+                  r.vx = knockTo.x;
+                  r.vy = knockTo.y;
+                }
+                spawnFloater(knockTo, "PUSHED", "#fcd34d");
+                shake += 3;
+              }
+              if (victimKilled) spawnExplosion(knockTo ?? victimPos);
             } else {
               spawnFloater(victimPos, "MISS", "#94a3b8");
             }
@@ -1042,15 +1057,78 @@ function drawTelegraphGround(e: Unit): void {
   const it = e.intent;
   if (!it) return;
   if (!eq(it.movePos, e.pos)) {
-    const c = center(it.movePos.x, it.movePos.y);
-    const foe = nearestFoe(e);
-    const facing = foe && foe.pos.x < it.movePos.x ? -1 : 1;
-    drawMech(c.x, c.y, PAL.enemy, facing, 0.3);
+    const from = center(e.pos.x, e.pos.y);
+    const to = center(it.movePos.x, it.movePos.y);
+    const pulse = 0.5 + 0.5 * Math.sin(time * 4);
+    ctx.setLineDash([3, 4]);
+    ctx.strokeStyle = `rgba(248,113,113,${0.25 + 0.2 * pulse})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const px = -uy;
+    const py = ux;
+    const size = 9;
+    ctx.strokeStyle = `rgba(248,113,113,${0.55 + 0.35 * pulse})`;
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(to.x - ux * size + px * size, to.y - uy * size + py * size);
+    ctx.lineTo(to.x, to.y);
+    ctx.lineTo(to.x - ux * size - px * size, to.y - uy * size - py * size);
+    ctx.stroke();
   }
   if (!it.attackPos) return;
   const a = center(it.attackPos.x, it.attackPos.y);
   ctx.fillStyle = "rgba(248,113,113,0.14)";
   ctx.fillRect(it.attackPos.x * TILE, it.attackPos.y * TILE, TILE, TILE);
+  if (it.knockbackPos) {
+    const kPulse = 0.5 + 0.5 * Math.sin(time * 5);
+    ctx.fillStyle = `rgba(252,211,77,${0.12 + 0.1 * kPulse})`;
+    ctx.fillRect(
+      it.knockbackPos.x * TILE,
+      it.knockbackPos.y * TILE,
+      TILE,
+      TILE,
+    );
+    const kFrom = a;
+    const kTo = center(it.knockbackPos.x, it.knockbackPos.y);
+    const kdx = kTo.x - kFrom.x;
+    const kdy = kTo.y - kFrom.y;
+    const klen = Math.hypot(kdx, kdy) || 1;
+    const kux = kdx / klen;
+    const kuy = kdy / klen;
+    const kpx = -kuy;
+    const kpy = kux;
+    const ksize = 8;
+    ctx.strokeStyle = `rgba(252,211,77,${0.55 + 0.35 * kPulse})`;
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(kFrom.x, kFrom.y);
+    ctx.lineTo(kTo.x, kTo.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(
+      kTo.x - kux * ksize + kpx * ksize,
+      kTo.y - kuy * ksize + kpy * ksize,
+    );
+    ctx.lineTo(kTo.x, kTo.y);
+    ctx.lineTo(
+      kTo.x - kux * ksize - kpx * ksize,
+      kTo.y - kuy * ksize - kpy * ksize,
+    );
+    ctx.stroke();
+  }
   const from = center(it.movePos.x, it.movePos.y);
   ctx.setLineDash([5, 5]);
   ctx.strokeStyle = "rgba(248,113,113,0.5)";

@@ -42,6 +42,8 @@ export interface Weapon {
   damage: number;
   range: number;
   heat: number;
+  /** Tiles to push the target along the attack vector after damage. */
+  knockback?: number;
 }
 
 export interface Archetype {
@@ -107,11 +109,57 @@ export const WEAPON_CATALOG: Weapon[] = [
   { name: "Burst Laser", damage: 3, range: 3, heat: 4 },
 ];
 
+export type EnemyKind = "stalker" | "striker" | "bruiser";
+
+export interface EnemyArchetype {
+  id: EnemyKind;
+  name: string;
+  hp: number;
+  moveRange: number;
+  heatCap: number;
+  weapon: Weapon;
+}
+
+export const ENEMY_ARCHETYPES: Record<EnemyKind, EnemyArchetype> = {
+  stalker: {
+    id: "stalker",
+    name: "Stalker",
+    hp: 5,
+    moveRange: 3,
+    heatCap: 6,
+    weapon: { name: "Scattergun", damage: 2, range: 2, heat: 0 },
+  },
+  striker: {
+    id: "striker",
+    name: "Striker",
+    hp: 2,
+    moveRange: 3,
+    heatCap: 4,
+    weapon: { name: "Railgun", damage: 3, range: 5, heat: 0 },
+  },
+  bruiser: {
+    id: "bruiser",
+    name: "Bruiser",
+    hp: 11,
+    moveRange: 2,
+    heatCap: 8,
+    weapon: { name: "Hammer", damage: 3, range: 1, heat: 0, knockback: 1 },
+  },
+};
+
+function missionComposition(mission: number): EnemyKind[] {
+  if (mission <= 1) return ["stalker", "stalker", "stalker"];
+  if (mission === 2) return ["stalker", "stalker", "striker"];
+  return ["stalker", "stalker", "bruiser"];
+}
+
 /** A committed enemy plan, revealed during the player's turn. */
 export interface Intent {
   movePos: Vec;
   attackPos: Vec | null;
   damage: number;
+  /** Tile the victim will be pushed to (only set for knockback weapons). */
+  knockbackPos: Vec | null;
 }
 
 export interface Unit {
@@ -119,6 +167,7 @@ export interface Unit {
   team: Team;
   name: string;
   archetype: ArchetypeId | null;
+  enemyKind: EnemyKind | null;
   hp: number;
   maxHp: number;
   pos: Vec;
@@ -150,7 +199,6 @@ export function eq(a: Vec, b: Vec): boolean {
   return a.x === b.x && a.y === b.y;
 }
 
-const ENEMY_GUN: Weapon = { name: "Scattergun", damage: 2, range: 2, heat: 0 };
 const PLAYER_SPAWNS: Vec[] = [
   { x: 2, y: 9 },
   { x: 6, y: 10 },
@@ -267,6 +315,7 @@ export class Game {
         team: "player" as Team,
         name: a.name,
         archetype: aid,
+        enemyKind: null,
         hp: a.maxHp,
         maxHp: a.maxHp,
         pos: { ...PLAYER_SPAWNS[i] },
@@ -307,19 +356,23 @@ export class Game {
       u.selectedWeapon = 0;
       this.units.push(u);
     });
-    ENEMY_SPAWNS.forEach((sp, i) => {
+    const composition = missionComposition(this.mission);
+    composition.forEach((kind, i) => {
+      const a = ENEMY_ARCHETYPES[kind];
+      const sp = ENEMY_SPAWNS[i] ?? ENEMY_SPAWNS[0];
       this.units.push({
         id: this.nextId++,
         team: "enemy",
-        name: `Stalker ${i + 1}`,
+        name: `${a.name} ${i + 1}`,
         archetype: null,
-        hp: 5,
-        maxHp: 5,
+        enemyKind: kind,
+        hp: a.hp,
+        maxHp: a.hp,
         pos: { ...sp },
-        moveRange: 3,
+        moveRange: a.moveRange,
         heat: 0,
-        maxHeat: 6,
-        weapons: [{ ...ENEMY_GUN }],
+        maxHeat: a.heatCap,
+        weapons: [{ ...a.weapon }],
         selectedWeapon: 0,
         hasMoved: false,
         hasFired: false,
@@ -587,7 +640,12 @@ export class Game {
   /** Enemy fires at its telegraphed tile, hitting whatever player is there. */
   enemyExecuteAttack(
     e: Unit,
-  ): { pos: Vec; damage: number; victim: Unit | null } | null {
+  ): {
+    pos: Vec;
+    damage: number;
+    victim: Unit | null;
+    knockTo: Vec | null;
+  } | null {
     if (!e.intent || !e.intent.attackPos || e.hp <= 0) return null;
     const pos = e.intent.attackPos;
     const victim =
@@ -595,11 +653,35 @@ export class Game {
         (u) => u.team === "player" && u.hp > 0 && eq(u.pos, pos),
       ) ?? null;
     const dmg = this.damageAfterCover(e.intent.damage, pos);
+    let knockTo: Vec | null = null;
     if (victim) {
       this.applyDamage(victim, dmg);
+      if (victim.hp > 0 && e.intent.knockbackPos) {
+        const kp = e.intent.knockbackPos;
+        const inBounds =
+          kp.x >= 0 && kp.y >= 0 && kp.x < GRID && kp.y < GRID;
+        const blocked =
+          !inBounds ||
+          this.terrainAt(kp) === "wreckage" ||
+          !!this.livingAt(kp);
+        if (!blocked) {
+          victim.pos = { x: kp.x, y: kp.y };
+          knockTo = { x: kp.x, y: kp.y };
+          const t = this.terrainAt(kp);
+          if (t === "fire") {
+            victim.heat = victim.maxHeat;
+            this.applyDamage(victim, FIRE_DAMAGE);
+          } else if (t === "pit") {
+            victim.nextTurnImpair = "full";
+          } else if (t === "water") {
+            victim.heat = 0;
+            victim.nextTurnImpair = "move";
+          }
+        }
+      }
       this.checkEnd();
     }
-    return { pos, damage: dmg, victim };
+    return { pos, damage: dmg, victim, knockTo };
   }
 
   endEnemyPhase(): void {
@@ -671,25 +753,47 @@ export class Game {
     this.selectedId = active ? active.id : null;
   }
 
+  /**
+   * Plan every enemy in a coordinated pass: track each player's projected HP
+   * after committed attacks so subsequent enemies pile onto wounded targets
+   * (focus fire) and don't waste shots on someone already planned to die.
+   */
   private planEnemies(): void {
-    for (const e of this.enemies()) e.intent = this.planOne(e);
+    const projectedHp = new Map<number, number>();
+    for (const p of this.players()) projectedHp.set(p.id, p.hp);
+
+    for (const e of this.enemies()) {
+      e.intent = this.planOne(e, projectedHp);
+      if (e.intent.attackPos) {
+        const target = this.players().find(
+          (p) => eq(p.pos, e.intent!.attackPos!),
+        );
+        if (target) {
+          const dmg = this.damageAfterCover(e.intent.damage, e.intent.attackPos);
+          const remaining =
+            (projectedHp.get(target.id) ?? target.hp) - dmg;
+          projectedHp.set(target.id, Math.max(0, remaining));
+        }
+      }
+    }
   }
 
   /**
-   * Plan one enemy: target the nearest player mech and either move into
-   * weapon range with a clear shot, or advance toward it. Enemies avoid
-   * ending on fire, pit, or water tiles.
+   * Plan one enemy. Considers every possible (target, strike-position) pair
+   * and picks the one whose target has the lowest projected HP. Tiebreaks by
+   * moving the shortest distance. If no shot is viable, advances toward the
+   * weakest player. Enemies avoid ending on fire, pit, or water tiles.
    */
-  private planOne(e: Unit): Intent {
+  private planOne(e: Unit, projectedHp: Map<number, number>): Intent {
     const gun = e.weapons[0];
     const targets = this.players();
     if (targets.length === 0) {
-      return { movePos: { ...e.pos }, attackPos: null, damage: gun.damage };
-    }
-
-    let tgt = targets[0];
-    for (const p of targets) {
-      if (manhattan(e.pos, p.pos) < manhattan(e.pos, tgt.pos)) tgt = p;
+      return {
+        movePos: { ...e.pos },
+        attackPos: null,
+        damage: gun.damage,
+        knockbackPos: null,
+      };
     }
 
     const options: Vec[] = [];
@@ -698,6 +802,45 @@ export class Game {
       const t = this.terrainAt(p);
       if (t === "fire" || t === "pit" || t === "water") continue;
       options.push(p);
+    }
+
+    type Shot = { target: Unit; from: Vec; priority: number };
+    const shots: Shot[] = [];
+    for (const target of targets) {
+      const proj = projectedHp.get(target.id) ?? target.hp;
+      if (proj <= 0) continue;
+      for (const from of options) {
+        if (manhattan(from, target.pos) > gun.range) continue;
+        if (!this.hasLineOfFire(from, target.pos)) continue;
+        const priority = proj * 100 + manhattan(from, e.pos);
+        shots.push({ target, from, priority });
+      }
+    }
+
+    if (shots.length > 0) {
+      shots.sort((a, b) => a.priority - b.priority);
+      const best = shots[0];
+      const knockbackPos = gun.knockback
+        ? this.knockbackDest(best.from, best.target.pos, gun.knockback)
+        : null;
+      return {
+        movePos: best.from,
+        attackPos: { x: best.target.pos.x, y: best.target.pos.y },
+        damage: gun.damage,
+        knockbackPos,
+      };
+    }
+
+    let tgt = targets[0];
+    for (const p of targets) {
+      const tp = projectedHp.get(tgt.id) ?? tgt.hp;
+      const pp = projectedHp.get(p.id) ?? p.hp;
+      if (pp < tp) tgt = p;
+      else if (
+        pp === tp &&
+        manhattan(e.pos, p.pos) < manhattan(e.pos, tgt.pos)
+      )
+        tgt = p;
     }
 
     const byCloseness = (a: Vec, b: Vec): number => {
@@ -710,26 +853,35 @@ export class Game {
       return a.y - b.y || a.x - b.x;
     };
 
-    const strikeFrom = options.filter(
-      (d) =>
-        manhattan(d, tgt.pos) <= gun.range && this.hasLineOfFire(d, tgt.pos),
-    );
-
-    if (strikeFrom.length > 0) {
-      strikeFrom.sort(byCloseness);
-      return {
-        movePos: strikeFrom[0],
-        attackPos: { x: tgt.pos.x, y: tgt.pos.y },
-        damage: gun.damage,
-      };
-    }
-
     options.sort(byCloseness);
     return {
       movePos: options[0] ?? { ...e.pos },
       attackPos: null,
       damage: gun.damage,
+      knockbackPos: null,
     };
+  }
+
+  /**
+   * Compute where a knockback would land. Returns null if the push would go
+   * out of bounds, into wreckage, or onto an occupied tile (no push).
+   */
+  private knockbackDest(from: Vec, target: Vec, dist: number): Vec | null {
+    const dx = Math.sign(target.x - from.x);
+    const dy = Math.sign(target.y - from.y);
+    if (dx === 0 && dy === 0) return null;
+    let cx = target.x;
+    let cy = target.y;
+    for (let i = 0; i < dist; i++) {
+      const nx = cx + dx;
+      const ny = cy + dy;
+      if (nx < 0 || ny < 0 || nx >= GRID || ny >= GRID) return null;
+      if (this.terrainAt({ x: nx, y: ny }) === "wreckage") return null;
+      if (this.livingAt({ x: nx, y: ny })) return null;
+      cx = nx;
+      cy = ny;
+    }
+    return { x: cx, y: cy };
   }
 
   // --- Salvage Bay ---
