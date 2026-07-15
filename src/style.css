@@ -297,6 +297,37 @@ canvas {
 }
 .intro-waves.hidden { display: none; }
 
+/* --- Cheat console --- */
+#cheat-v { cursor: pointer; }
+.cheat-input {
+  width: 130px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--amber);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 5px 8px;
+  outline: none;
+  font-family: inherit;
+}
+.cheat-input::placeholder { color: var(--muted); }
+.cheat-input:focus { border-color: var(--amber); }
+.cheat-input.hidden { display: none; }
+.cheat-input.ok { border-color: var(--green); color: var(--green); }
+@keyframes cheat-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+.cheat-input.bad {
+  border-color: var(--enemy);
+  color: var(--enemy);
+  animation: cheat-shake 0.25s ease-in-out 2;
+}
+
 /* --- Mute button --- */
 .mute-btn {
   margin-left: auto;

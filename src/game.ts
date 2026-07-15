@@ -1409,6 +1409,14 @@ export class Game {
     return { x: cx, y: cy };
   }
 
+  /** Cheat: instantly complete the current mission. */
+  cheatSkipMission(): boolean {
+    if (this.phase !== "player") return false;
+    this.objectiveComplete = true;
+    this.checkEnd();
+    return true;
+  }
+
   // --- Salvage Bay ---
 
   canRepair(u: Unit): boolean {

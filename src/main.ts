@@ -77,6 +77,8 @@ const introEnemies = document.getElementById("intro-enemies") as HTMLDivElement;
 const introWaves = document.getElementById("intro-waves") as HTMLDivElement;
 const introGo = document.getElementById("intro-go") as HTMLButtonElement;
 const btnMute = document.getElementById("btn-mute") as HTMLButtonElement;
+const cheatV = document.getElementById("cheat-v") as HTMLSpanElement;
+const cheatInput = document.getElementById("cheat-input") as HTMLInputElement;
 
 // --- HiDPI ---
 const dpr = window.devicePixelRatio || 1;
@@ -1812,7 +1814,63 @@ canvas.addEventListener("click", (e) => {
   const t = tileFromEvent(e);
   if (t) handleClick(t);
 });
+// --- Cheat codes ---
+const CHEATS: Record<string, () => boolean> = {
+  TYNEXT: () => {
+    if (busy || !game.cheatSkipMission()) return false;
+    spawnFloater(
+      { x: Math.floor(GRID / 2), y: Math.floor(GRID / 2) },
+      "MISSION SKIPPED",
+      "#4ade80",
+    );
+    refreshUI();
+    if (game.phase !== "player") {
+      busy = true;
+      window.setTimeout(settleBattle, 600);
+    }
+    return true;
+  },
+};
+
+function closeCheatInput(): void {
+  cheatInput.classList.add("hidden");
+  cheatInput.classList.remove("ok", "bad");
+  cheatInput.value = "";
+  cheatInput.blur();
+}
+
+cheatV.addEventListener("click", () => {
+  if (cheatInput.classList.contains("hidden")) {
+    cheatInput.classList.remove("hidden");
+    cheatInput.value = "";
+    cheatInput.focus();
+  } else {
+    closeCheatInput();
+  }
+});
+
+cheatInput.addEventListener("keydown", (e) => {
+  e.stopPropagation();
+  if (e.key === "Escape") {
+    closeCheatInput();
+    return;
+  }
+  if (e.key !== "Enter") return;
+  const code = cheatInput.value.trim().toUpperCase();
+  const run = CHEATS[code];
+  cheatInput.classList.remove("ok", "bad");
+  if (run && run()) {
+    cheatInput.classList.add("ok");
+    window.setTimeout(closeCheatInput, 450);
+  } else {
+    cheatInput.classList.add("bad");
+    cheatInput.select();
+    window.setTimeout(() => cheatInput.classList.remove("bad"), 500);
+  }
+});
+
 window.addEventListener("keydown", (e) => {
+  if (document.activeElement === cheatInput) return;
   if (busy || game.phase !== "player") return;
   const sel = game.selected;
   if ((e.key === "1" || e.key === "2") && sel) {
