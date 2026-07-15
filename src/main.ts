@@ -7,6 +7,8 @@ import {
   ARCHETYPE_ORDER,
   WEAPON_CATALOG,
   MISSIONS_PER_RUN,
+  MISSION_DEFS,
+  ENEMY_ARCHETYPES,
   REPAIR_HP,
   REPAIR_COST,
   RECOVER_SALVAGE,
@@ -22,6 +24,8 @@ import {
   type Vec,
   type Unit,
 } from "./game";
+import { getSprite, spriteDataURL, type SpriteKey } from "./sprites";
+import { ensureAudio, audioMuted, toggleMute } from "./audio";
 
 const TILE = 64;
 const SIZE = GRID * TILE;
@@ -63,6 +67,15 @@ const bayCores = document.getElementById("bay-cores") as HTMLElement;
 const bayMechs = document.getElementById("bay-mechs") as HTMLDivElement;
 const bayRearm = document.getElementById("bay-rearm") as HTMLDivElement;
 const bayDeploy = document.getElementById("bay-deploy") as HTMLButtonElement;
+const introEl = document.getElementById("mission-intro") as HTMLDivElement;
+const introKicker = document.getElementById("intro-kicker") as HTMLDivElement;
+const introTitle = document.getElementById("intro-title") as HTMLDivElement;
+const introFlavor = document.getElementById("intro-flavor") as HTMLDivElement;
+const introObjective = document.getElementById("intro-objective") as HTMLDivElement;
+const introEnemies = document.getElementById("intro-enemies") as HTMLDivElement;
+const introWaves = document.getElementById("intro-waves") as HTMLDivElement;
+const introGo = document.getElementById("intro-go") as HTMLButtonElement;
+const btnMute = document.getElementById("btn-mute") as HTMLButtonElement;
 
 // --- HiDPI ---
 const dpr = window.devicePixelRatio || 1;
@@ -264,12 +277,86 @@ function renderDeploySlots(): void {
     const pal = PAL[aid];
     slotEls[i].style.borderLeftColor = pal.body;
     slotEls[i].innerHTML =
+      `<img class="slot-sprite" src="${spriteDataURL(aid, 3)}" alt="">` +
+      `<div class="slot-info">` +
       `<div class="slot-name">Slot ${i + 1}: ${a.name}</div>` +
       `<div class="slot-blurb">${a.blurb}</div>` +
       `<div class="slot-stats">HP ${a.maxHp} &middot; MOVE ${a.moveRange} &middot; ` +
-      `HEAT ${a.heatCap} &middot; ${a.weapons.map((w) => w.name).join(", ")}</div>`;
+      `HEAT ${a.heatCap} &middot; ${a.weapons.map((w) => w.name).join(", ")}</div>` +
+      `</div>`;
   });
 }
+
+// --- Mission intros ---
+const MISSION_INTROS = [
+  {
+    title: "SCRAPFALL",
+    flavor:
+      "The crash basin is crawling with scavenger frames. Sweep it clean and stake the claim.",
+  },
+  {
+    title: "CACHE GRAB",
+    flavor:
+      "Recon flagged an intact core cache dug into the wreck line upfield. It will be guarded.",
+  },
+  {
+    title: "DUST-OFF",
+    flavor:
+      "The salvage barge needs time to spool its lift engines. Hold the field until it screams in.",
+  },
+];
+
+function objectiveBrief(): string {
+  const o = game.objective;
+  switch (o.kind) {
+    case "extract":
+      return "Get any mech to the amber CACHE tile — or destroy every hostile.";
+    case "hold":
+      return `Hold the marked position for ${o.turnsRequired} turns.`;
+    case "survive":
+      return `Survive ${o.turnsRequired} turns. Reinforcements will not stop.`;
+    default:
+      return "Destroy every hostile.";
+  }
+}
+
+function showMissionIntro(): void {
+  busy = true;
+  const idx = game.mission - 1;
+  const intro = MISSION_INTROS[idx] ?? MISSION_INTROS[0];
+  const def = MISSION_DEFS[idx] ?? MISSION_DEFS[0];
+  introKicker.textContent = `MISSION ${game.mission} OF ${MISSIONS_PER_RUN}`;
+  introTitle.textContent = intro.title;
+  introFlavor.textContent = intro.flavor;
+  introObjective.textContent = objectiveBrief();
+
+  const counts = new Map<EnemyKind, number>();
+  for (const k of def.enemies) counts.set(k, (counts.get(k) ?? 0) + 1);
+  introEnemies.replaceChildren();
+  for (const [kind, n] of counts) {
+    const card = document.createElement("div");
+    card.className = "intro-enemy";
+    const img = document.createElement("img");
+    img.src = spriteDataURL(kind, 3);
+    img.alt = "";
+    const label = document.createElement("span");
+    label.textContent = `${n}× ${ENEMY_ARCHETYPES[kind].name.toUpperCase()}`;
+    card.append(img, label);
+    introEnemies.appendChild(card);
+  }
+
+  const hasWaves = def.waves.length > 0 || !!def.recurringWave;
+  introWaves.classList.toggle("hidden", !hasWaves);
+
+  introEl.classList.remove("hidden");
+  refreshUI();
+}
+
+introGo.addEventListener("click", () => {
+  introEl.classList.add("hidden");
+  busy = false;
+  refreshUI();
+});
 
 function doDeploy(): void {
   game.deploy([...lance]);
@@ -281,8 +368,7 @@ function doDeploy(): void {
   shake = 0;
   syncRenderState();
   deployEl.classList.add("hidden");
-  busy = false;
-  refreshUI();
+  showMissionIntro();
 }
 
 // --- Weapon buttons (in-battle) ---
@@ -566,6 +652,7 @@ function restart(): void {
   busy = false;
   overlay.classList.add("hidden");
   salvageEl.classList.add("hidden");
+  introEl.classList.add("hidden");
   deployEl.classList.remove("hidden");
   renderDeploySlots();
   refreshUI();
@@ -1352,12 +1439,19 @@ function drawHeatShimmer(u: Unit, cx: number, cy: number): void {
   ctx.fill();
 }
 
+/** Sprite lookup key for a unit (player archetype or enemy kind). */
+function spriteFor(u: Unit): SpriteKey {
+  if (u.team === "player") return (u.archetype ?? "vanguard") as SpriteKey;
+  return (u.enemyKind ?? "stalker") as SpriteKey;
+}
+
 function drawMech(
   cx: number,
   cy: number,
-  pal: Palette,
+  key: SpriteKey,
   facing: number,
   alpha: number,
+  frame: number,
 ): void {
   ctx.save();
   ctx.globalAlpha = alpha;
@@ -1369,54 +1463,8 @@ function drawMech(
 
   ctx.translate(cx, cy);
   ctx.scale(facing, 1);
-
-  ctx.fillStyle = pal.dark;
-  ctx.beginPath();
-  ctx.moveTo(-12, 0);
-  ctx.lineTo(-3, 0);
-  ctx.lineTo(-5, 16);
-  ctx.lineTo(-15, 16);
-  ctx.closePath();
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(3, 0);
-  ctx.lineTo(12, 0);
-  ctx.lineTo(15, 16);
-  ctx.lineTo(5, 16);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillRect(-18, 15, 13, 5);
-  ctx.fillRect(5, 15, 13, 5);
-
-  ctx.fillStyle = pal.dark;
-  ctx.beginPath();
-  ctx.roundRect(8, -8, 20, 8, 2);
-  ctx.fill();
-  ctx.fillStyle = pal.accent;
-  ctx.fillRect(26, -6, 3, 4);
-
-  ctx.fillStyle = pal.body;
-  ctx.beginPath();
-  ctx.moveTo(-13, -13);
-  ctx.lineTo(0, -21);
-  ctx.lineTo(13, -13);
-  ctx.lineTo(13, 3);
-  ctx.lineTo(0, 10);
-  ctx.lineTo(-13, 3);
-  ctx.closePath();
-  ctx.fill();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = pal.dark;
-  ctx.stroke();
-
-  ctx.fillStyle = pal.accent;
-  ctx.beginPath();
-  ctx.moveTo(-9, -10);
-  ctx.lineTo(7, -12);
-  ctx.lineTo(7, -5);
-  ctx.lineTo(-9, -4);
-  ctx.closePath();
-  ctx.fill();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(getSprite(key, frame), -24, -26, 48, 48);
 
   ctx.restore();
 }
@@ -1469,15 +1517,16 @@ function drawUnits(): void {
 
     if (alive) drawHeatShimmer(u, cx, cy);
 
+    const frame = Math.floor(time * 2.2 + u.id * 0.9) % 2;
     if (scale !== 1) {
       ctx.save();
       ctx.translate(cx, cy);
       ctx.scale(scale, scale);
       ctx.translate(-cx, -cy);
-      drawMech(cx, cy, palFor(u), facing, alpha);
+      drawMech(cx, cy, spriteFor(u), facing, alpha, frame);
       ctx.restore();
     } else {
-      drawMech(cx, cy, palFor(u), facing, alpha);
+      drawMech(cx, cy, spriteFor(u), facing, alpha, frame);
     }
 
     if (alive) drawHpPips(cx, cy, u, palFor(u).body);
@@ -1713,8 +1762,15 @@ bayDeploy.addEventListener("click", () => {
   shake = 0;
   syncRenderState();
   salvageEl.classList.add("hidden");
-  busy = false;
-  refreshUI();
+  showMissionIntro();
+});
+
+// --- Audio ---
+window.addEventListener("pointerdown", ensureAudio);
+window.addEventListener("keydown", ensureAudio);
+btnMute.classList.toggle("off", audioMuted());
+btnMute.addEventListener("click", () => {
+  btnMute.classList.toggle("off", toggleMute());
 });
 
 renderDeploySlots();

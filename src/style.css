@@ -239,6 +239,79 @@ canvas {
 }
 .bay-mech.flash { animation: bay-card-flash 0.6s ease-out; }
 
+/* --- Mission intro --- */
+.intro-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  color: var(--muted);
+}
+.intro-title {
+  font-size: 38px;
+  font-weight: 800;
+  letter-spacing: 8px;
+  color: #fff;
+  text-shadow: 0 0 18px rgba(251, 191, 36, 0.25);
+}
+.intro-flavor {
+  max-width: 380px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.intro-objective {
+  max-width: 380px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--amber);
+  border: 1px solid var(--amber);
+  border-radius: 5px;
+  padding: 7px 12px;
+}
+.intro-enemies { display: flex; gap: 18px; }
+.intro-enemy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.intro-enemy img {
+  width: 48px;
+  height: 48px;
+  image-rendering: pixelated;
+}
+.intro-enemy span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--enemy);
+}
+.intro-waves {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--enemy);
+}
+.intro-waves.hidden { display: none; }
+
+/* --- Mute button --- */
+.mute-btn {
+  margin-left: auto;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+.mute-btn:hover { color: var(--text); background: var(--panel-2); }
+.mute-btn.off { color: #4a5561; text-decoration: line-through; }
+
 .deploy-title {
   font-size: 16px;
   font-weight: 800;
@@ -258,8 +331,18 @@ canvas {
   cursor: pointer;
   color: var(--text);
   transition: background 0.12s ease;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 .deploy-slot:hover { background: var(--panel-2); }
+.slot-sprite {
+  width: 48px;
+  height: 48px;
+  image-rendering: pixelated;
+  flex: 0 0 48px;
+}
+.slot-info { min-width: 0; }
 .slot-name { font-size: 14px; font-weight: 700; }
 .slot-blurb { font-size: 11px; color: var(--muted); margin: 2px 0 4px; }
 .slot-stats { font-size: 10px; color: var(--muted); letter-spacing: 0.5px; }

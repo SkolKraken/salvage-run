@@ -9,7 +9,8 @@
     <main id="app">
       <header>
         <h1>SALVAGE RUN</h1>
-        <span class="tag">vertical slice</span>
+        <span class="tag">tactics roguelite</span>
+        <button id="btn-mute" class="mute-btn" title="Toggle music">&#9835;</button>
       </header>
 
       <div id="turn-banner" class="banner player">YOUR TURN</div>
@@ -28,6 +29,18 @@
           <div class="overlay-text" id="overlay-text">VICTORY</div>
           <div class="overlay-sub" id="overlay-sub"></div>
           <button id="overlay-restart" class="btn primary">New Run</button>
+        </div>
+
+        <div id="mission-intro" class="overlay hidden">
+          <div class="intro-kicker" id="intro-kicker"></div>
+          <div class="intro-title" id="intro-title"></div>
+          <div class="intro-flavor" id="intro-flavor"></div>
+          <div class="intro-objective" id="intro-objective"></div>
+          <div class="intro-enemies" id="intro-enemies"></div>
+          <div class="intro-waves hidden" id="intro-waves">
+            &#9888; Enemy reinforcements expected &mdash; watch for drop zones
+          </div>
+          <button id="intro-go" class="btn primary">LAUNCH</button>
         </div>
 
         <div id="salvage" class="overlay hidden">
