@@ -249,7 +249,7 @@ export const MISSION_DEFS: MissionDef[] = [
     ],
     recurringWave: { every: 4, spawns: ["stalker"] },
     structures: [{ kind: "beacon", hp: 10 }],
-    objective: { kind: "survive", turns: 7 },
+    objective: { kind: "survive", turns: 9 },
   },
 ];
 
@@ -535,7 +535,9 @@ export class Game {
         name: "Lift Beacon",
         hp: s.hp,
         maxHp: s.hp,
-        pos: this.pickObjectiveTile(5, 7),
+        // Keep the beacon out of the enemy-side 40% of the board so the
+        // lance can realistically reach it before the first wave does.
+        pos: this.pickObjectiveTile(6, 9),
       });
     }
     this.objective = this.buildObjective(def.objective);
