@@ -53,6 +53,8 @@ export interface Weapon {
   knockback?: number;
   /** Threatened area (defaults to "single"). */
   shape?: WeaponShape;
+  /** Lobbed shot: ignores wreckage when tracing line of fire. */
+  arcing?: boolean;
 }
 
 export interface Archetype {
@@ -118,7 +120,7 @@ export const WEAPON_CATALOG: Weapon[] = [
   { name: "Burst Laser", damage: 3, range: 3, heat: 4 },
 ];
 
-export type EnemyKind = "stalker" | "striker" | "bruiser";
+export type EnemyKind = "stalker" | "striker" | "bruiser" | "barrager";
 
 export interface EnemyArchetype {
   id: EnemyKind;
@@ -154,6 +156,21 @@ export const ENEMY_ARCHETYPES: Record<EnemyKind, EnemyArchetype> = {
     heatCap: 8,
     weapon: { name: "Hammer", damage: 3, range: 1, heat: 0, knockback: 1 },
   },
+  barrager: {
+    id: "barrager",
+    name: "Barrager",
+    hp: 3,
+    moveRange: 2,
+    heatCap: 6,
+    weapon: {
+      name: "Arc Mortar",
+      damage: 1,
+      range: 6,
+      heat: 0,
+      shape: "cross",
+      arcing: true,
+    },
+  },
 };
 
 /** A reinforcement wave: on `turn`, spawn markers appear; units arrive next turn. */
@@ -180,12 +197,26 @@ export type ObjectiveDef =
 /** Runtime objective state for the current mission. */
 export interface ObjectiveState {
   kind: ObjectiveKind;
-  /** extract: the cache tile; hold: the position to defend. */
+  /** extract: the cache tile while grounded; hold: the position to defend. */
   tile: Vec | null;
   /** hold: turns of occupation needed; survive: turns to outlast. */
   turnsRequired: number;
   /** hold: turns of occupation banked so far. */
   progress: number;
+  /** extract: unit currently hauling the cache (slowed, can't fire). */
+  carrierId: number | null;
+}
+
+export type StructureKind = "beacon";
+
+/** A static, non-dodging emplacement enemies can attack. */
+export interface Structure {
+  id: number;
+  kind: StructureKind;
+  name: string;
+  hp: number;
+  maxHp: number;
+  pos: Vec;
 }
 
 export interface MissionDef {
@@ -193,6 +224,8 @@ export interface MissionDef {
   waves: WaveDef[];
   /** Endless pressure: a wave every N turns (used by survive missions). */
   recurringWave?: { every: number; spawns: EnemyKind[] };
+  /** Emplacements to defend; destruction of a beacon fails the run. */
+  structures?: { kind: StructureKind; hp: number }[];
   objective: ObjectiveDef;
 }
 
@@ -205,16 +238,17 @@ export const MISSION_DEFS: MissionDef[] = [
   },
   {
     enemies: ["stalker", "stalker", "striker"],
-    waves: [{ turn: 3, spawns: ["stalker", "stalker"] }],
+    waves: [{ turn: 3, spawns: ["stalker"] }],
     objective: { kind: "extract" },
   },
   {
     enemies: ["stalker", "stalker", "bruiser"],
     waves: [
       { turn: 2, spawns: ["stalker"] },
-      { turn: 5, spawns: ["striker"] },
+      { turn: 4, spawns: ["barrager"] },
     ],
     recurringWave: { every: 4, spawns: ["stalker"] },
+    structures: [{ kind: "beacon", hp: 10 }],
     objective: { kind: "survive", turns: 7 },
   },
 ];
@@ -407,9 +441,18 @@ export class Game {
     tile: null,
     turnsRequired: 0,
     progress: 0,
+    carrierId: null,
   };
   /** Set when the objective is achieved (checked by checkEnd). */
   private objectiveComplete = false;
+  /** Emplacements on the field this mission. */
+  structures: Structure[] = [];
+  /** extract: tiles the carrier must reach to win. */
+  exfilTiles: Vec[] = [];
+  /** Why the run failed, when a specific event caused it. */
+  failReason: string | null = null;
+  /** Set when a must-defend structure is destroyed. */
+  private criticalLoss = false;
   mission = 0;
   salvage = 0;
   cores = 0;
@@ -481,6 +524,20 @@ export class Game {
     this.recentSpawns = [];
     this.recentSpawnBlocks = [];
     this.objectiveComplete = false;
+    this.criticalLoss = false;
+    this.failReason = null;
+    this.structures = [];
+    this.exfilTiles = [];
+    for (const s of def.structures ?? []) {
+      this.structures.push({
+        id: this.nextId++,
+        kind: s.kind,
+        name: "Lift Beacon",
+        hp: s.hp,
+        maxHp: s.hp,
+        pos: this.pickObjectiveTile(5, 7),
+      });
+    }
     this.objective = this.buildObjective(def.objective);
     this.startPlayerTurn(true);
   }
@@ -544,11 +601,13 @@ export class Game {
   /** Materialize the mission's objective, picking marker tiles on this map. */
   private buildObjective(def: ObjectiveDef): ObjectiveState {
     if (def.kind === "extract") {
+      this.exfilTiles = this.pickExfilTiles();
       return {
         kind: "extract",
         tile: this.pickObjectiveTile(1, 3),
         turnsRequired: 0,
         progress: 0,
+        carrierId: null,
       };
     }
     if (def.kind === "hold") {
@@ -557,6 +616,7 @@ export class Game {
         tile: this.pickObjectiveTile(4, 7),
         turnsRequired: def.turns,
         progress: 0,
+        carrierId: null,
       };
     }
     if (def.kind === "survive") {
@@ -565,9 +625,16 @@ export class Game {
         tile: null,
         turnsRequired: def.turns,
         progress: 0,
+        carrierId: null,
       };
     }
-    return { kind: "killAll", tile: null, turnsRequired: 0, progress: 0 };
+    return {
+      kind: "killAll",
+      tile: null,
+      turnsRequired: 0,
+      progress: 0,
+      carrierId: null,
+    };
   }
 
   /** Random clear tile with y in [yMin, yMax], biased toward the middle columns. */
@@ -578,6 +645,7 @@ export class Game {
         const p = { x, y };
         if (this.terrainAt(p) !== "open") continue;
         if (this.livingAt(p)) continue;
+        if (this.structureAt(p)) continue;
         cands.push(p);
       }
     }
@@ -585,13 +653,53 @@ export class Game {
     return cands[Math.floor(Math.random() * cands.length)];
   }
 
-  /** A player mech reaching the extract cache completes the objective. */
+  /** Three open tiles on the player's board edge where the carrier can exfil. */
+  private pickExfilTiles(): Vec[] {
+    const y = GRID - 1;
+    // find the run of open tiles closest to the board center
+    let best: Vec[] = [];
+    let run: Vec[] = [];
+    for (let x = 0; x < GRID; x++) {
+      const p = { x, y };
+      if (this.terrainAt(p) === "open" && !this.structureAt(p)) {
+        run.push(p);
+      } else {
+        if (run.length > best.length) best = run;
+        run = [];
+      }
+    }
+    if (run.length > best.length) best = run;
+    if (best.length <= 3) return best;
+    const mid = Math.floor(best.length / 2);
+    return best.slice(Math.max(0, mid - 1), mid + 2);
+  }
+
+  /**
+   * Cache pickup and delivery. Stepping onto the grounded cache makes this
+   * mech the carrier (and trips the alarm); a carrier reaching an exfil tile
+   * completes the mission.
+   */
   private touchObjective(u: Unit): void {
     if (this.objectiveComplete) return;
-    if (this.objective.kind !== "extract" || !this.objective.tile) return;
-    if (u.team !== "player" || u.hp <= 0) return;
-    if (eq(u.pos, this.objective.tile)) {
+    const o = this.objective;
+    if (o.kind !== "extract" || u.team !== "player" || u.hp <= 0) return;
+    if (o.carrierId === null && o.tile && eq(u.pos, o.tile)) {
+      o.carrierId = u.id;
+      o.tile = null;
+      this.triggerAlarm();
+    } else if (
+      o.carrierId === u.id &&
+      this.exfilTiles.some((t) => eq(t, u.pos))
+    ) {
       this.objectiveComplete = true;
+    }
+  }
+
+  /** Grabbing the cache calls in an immediate response drop. */
+  private triggerAlarm(): void {
+    for (const kind of ["stalker", "striker"] as EnemyKind[]) {
+      const pos = this.pickSpawnTile();
+      if (pos) this.pendingSpawns.push({ pos, kind, turnsUntil: 1 });
     }
   }
 
@@ -623,6 +731,7 @@ export class Game {
         const t = this.terrainAt(p);
         if (t !== "open" && t !== "cover") continue;
         if (this.livingAt(p)) continue;
+        if (this.structureAt(p)) continue;
         if (this.pendingSpawns.some((s) => eq(s.pos, p))) continue;
         cands.push(p);
       }
@@ -648,6 +757,10 @@ export class Game {
     this.salvage = 0;
     this.cores = 0;
     this.wreckMarks = [];
+    this.structures = [];
+    this.exfilTiles = [];
+    this.pendingSpawns = [];
+    this.failReason = null;
   }
 
   terrainAt(p: Vec): TerrainKind {
@@ -672,6 +785,16 @@ export class Game {
     return this.units.find((u) => u.hp > 0 && eq(u.pos, pos));
   }
 
+  structureAt(pos: Vec): Structure | undefined {
+    return this.structures.find((s) => s.hp > 0 && eq(s.pos, pos));
+  }
+
+  /** Carriers haul the cache one tile slower. */
+  effectiveMove(u: Unit): number {
+    const hauling = this.objective.carrierId === u.id;
+    return Math.max(1, u.moveRange - (hauling ? 1 : 0));
+  }
+
   selectUnit(id: number): void {
     const u = this.units.find((x) => x.id === id);
     if (u && u.team === "player" && u.hp > 0) this.selectedId = id;
@@ -689,8 +812,9 @@ export class Game {
    * Whether a clear straight line of fire exists. Wreckage blocks it, and a
    * mech down in a pit is shielded from any attacker that is not adjacent.
    */
-  hasLineOfFire(a: Vec, b: Vec): boolean {
+  hasLineOfFire(a: Vec, b: Vec, arcing = false): boolean {
     if (this.terrainAt(b) === "pit" && manhattan(a, b) > 1) return false;
+    if (arcing) return true; // lobbed shots clear wreckage
     const dx = b.x - a.x;
     const dy = b.y - a.y;
     const steps = Math.max(Math.abs(dx), Math.abs(dy)) * 6;
@@ -728,7 +852,7 @@ export class Game {
     const startK = u.pos.y * GRID + u.pos.x;
     map.set(startK, { steps: 0, parent: -1, fires: 0 });
     let frontier: Vec[] = [u.pos];
-    for (let step = 1; step <= u.moveRange; step++) {
+    for (let step = 1; step <= this.effectiveMove(u); step++) {
       const next: Vec[] = [];
       for (const p of frontier) {
         const pk = p.y * GRID + p.x;
@@ -738,6 +862,7 @@ export class Game {
           const t = this.terrainAt(n);
           if (t === "wreckage") continue;
           if (this.livingAt(n)) continue;
+          if (this.structureAt(n)) continue;
           const nk = n.y * GRID + n.x;
           const nFires = pInfo.fires + (t === "fire" ? 1 : 0);
           const existing = map.get(nk);
@@ -817,10 +942,12 @@ export class Game {
     if (u.hp <= 0 || target.team !== "enemy" || target.hp <= 0) return false;
     // A mech down in a pit cannot fire — it must climb out first.
     if (this.terrainAt(u.pos) === "pit") return false;
+    // The cache carrier's hands are full.
+    if (this.objective.carrierId === u.id) return false;
     const w = u.weapons[i];
     if (!w) return false;
     if (manhattan(u.pos, target.pos) > w.range) return false;
-    return this.hasLineOfFire(u.pos, target.pos);
+    return this.hasLineOfFire(u.pos, target.pos, w.arcing ?? false);
   }
 
   /** True if the unit's selected weapon can hit any enemy right now. */
@@ -884,6 +1011,7 @@ export class Game {
     if (eq(dest, e.pos)) return;
     const occ = this.livingAt(dest);
     if (occ && occ.id !== e.id) return;
+    if (this.structureAt(dest)) return;
     e.pos = { x: dest.x, y: dest.y };
   }
 
@@ -921,7 +1049,21 @@ export class Game {
       const victim = this.units.find(
         (u) => u.id !== e.id && u.hp > 0 && eq(u.pos, pos),
       );
-      if (!victim) continue;
+      if (!victim) {
+        const s = this.structureAt(pos);
+        if (s) {
+          const dmg = this.damageAfterCover(e.intent.damage, pos);
+          const killed = this.applyStructureDamage(s, dmg);
+          hits.push({
+            id: s.id,
+            pos: { ...pos },
+            damage: dmg,
+            killed,
+            knockTo: null,
+          });
+        }
+        continue;
+      }
       const dmg = this.damageAfterCover(e.intent.damage, pos);
       this.applyDamage(victim, dmg);
       let knockTo: Vec | null = null;
@@ -969,7 +1111,12 @@ export class Game {
   /** Resolve a mission outcome: award salvage on a win, or end the run. */
   private checkEnd(): void {
     if (this.phase !== "player" && this.phase !== "enemy") return;
+    if (this.criticalLoss) {
+      this.phase = "runFailed";
+      return;
+    }
     if (this.players().length === 0) {
+      this.failReason = "The lance is down.";
       this.phase = "runFailed";
       return;
     }
@@ -1003,6 +1150,27 @@ export class Game {
     const row = this.terrain[u.pos.y];
     if (row) row[u.pos.x] = "fire";
     this.wreckMarks.push({ x: u.pos.x, y: u.pos.y });
+    // A dead carrier drops the cache where it fell.
+    if (this.objective.carrierId === u.id) {
+      this.objective.carrierId = null;
+      this.objective.tile = { x: u.pos.x, y: u.pos.y };
+    }
+  }
+
+  private applyStructureDamage(s: Structure, dmg: number): boolean {
+    if (dmg <= 0 || s.hp <= 0) return false;
+    s.hp = Math.max(0, s.hp - dmg);
+    if (s.hp === 0) {
+      const row = this.terrain[s.pos.y];
+      if (row) row[s.pos.x] = "fire";
+      this.wreckMarks.push({ x: s.pos.x, y: s.pos.y });
+      if (s.kind === "beacon") {
+        this.criticalLoss = true;
+        this.failReason = "The lift beacon was destroyed.";
+      }
+      return true;
+    }
+    return false;
   }
 
   /** Hold/survive objectives advance at the start of each player turn. */
@@ -1064,6 +1232,9 @@ export class Game {
   private planEnemies(): void {
     const projectedHp = new Map<number, number>();
     for (const p of this.players()) projectedHp.set(p.id, p.hp);
+    for (const s of this.structures) {
+      if (s.hp > 0) projectedHp.set(s.id, s.hp);
+    }
 
     // Clear first so planOne can tell freshly-planned peers (non-null
     // intent) from peers still carrying last turn's stale plan.
@@ -1073,7 +1244,9 @@ export class Game {
       e.intent = this.planOne(e, projectedHp);
       if (e.intent.attackPos) {
         for (const tile of e.intent.attackTiles) {
-          const target = this.players().find((p) => eq(p.pos, tile));
+          const target =
+            this.players().find((p) => eq(p.pos, tile)) ??
+            this.structureAt(tile);
           if (!target) continue;
           const dmg = this.damageAfterCover(e.intent.damage, tile);
           const remaining = (projectedHp.get(target.id) ?? target.hp) - dmg;
@@ -1092,7 +1265,27 @@ export class Game {
   private planOne(e: Unit, projectedHp: Map<number, number>): Intent {
     const gun = e.weapons[0];
     const shape: WeaponShape = gun.shape ?? "single";
-    const targets = this.players();
+    const arcing = gun.arcing ?? false;
+    // Structures can't dodge, so they're always-valid targets; the carrier
+    // is the priority target on extract missions.
+    const carrierId = this.objective.carrierId;
+    interface TargetRef {
+      id: number;
+      pos: Vec;
+      hp: number;
+      isStructure: boolean;
+    }
+    const targets: TargetRef[] = [
+      ...this.players().map((p) => ({
+        id: p.id,
+        pos: p.pos,
+        hp: p.hp,
+        isStructure: false,
+      })),
+      ...this.structures
+        .filter((s) => s.hp > 0)
+        .map((s) => ({ id: s.id, pos: s.pos, hp: s.hp, isStructure: true })),
+    ];
     if (targets.length === 0) {
       return {
         movePos: { ...e.pos },
@@ -1117,17 +1310,23 @@ export class Game {
       .filter((o) => o.id !== e.id)
       .map((o) => (o.intent ? o.intent.movePos : o.pos));
 
-    type Shot = { target: Unit; from: Vec; tiles: Vec[]; priority: number };
+    type Shot = {
+      target: TargetRef;
+      from: Vec;
+      tiles: Vec[];
+      priority: number;
+    };
     const shots: Shot[] = [];
     for (const target of targets) {
       const proj = projectedHp.get(target.id) ?? target.hp;
       if (proj <= 0) continue;
       for (const from of options) {
         if (manhattan(from, target.pos) > gun.range) continue;
-        if (!this.hasLineOfFire(from, target.pos)) continue;
+        if (!this.hasLineOfFire(from, target.pos, arcing)) continue;
         const tiles = aoeTiles(from, target.pos, shape);
         let priority = proj * 100 + manhattan(from, e.pos);
-        // Prefer spreads that clip a second player; avoid clipping allies.
+        if (target.id === carrierId) priority -= 250;
+        // Prefer spreads that clip extra targets; avoid clipping allies.
         for (const t of tiles) {
           if (eq(t, target.pos)) continue;
           if (targets.some((p) => eq(p.pos, t))) priority -= 50;
@@ -1140,9 +1339,10 @@ export class Game {
     if (shots.length > 0) {
       shots.sort((a, b) => a.priority - b.priority);
       const best = shots[0];
-      const knockbackPos = gun.knockback
-        ? this.knockbackDest(best.from, best.target.pos, gun.knockback)
-        : null;
+      const knockbackPos =
+        gun.knockback && !best.target.isStructure
+          ? this.knockbackDest(best.from, best.target.pos, gun.knockback)
+          : null;
       return {
         movePos: best.from,
         attackPos: { x: best.target.pos.x, y: best.target.pos.y },
@@ -1156,9 +1356,11 @@ export class Game {
     for (const p of targets) {
       const tp = projectedHp.get(tgt.id) ?? tgt.hp;
       const pp = projectedHp.get(p.id) ?? p.hp;
-      if (pp < tp) tgt = p;
+      const pBonus = p.id === carrierId ? -3 : 0;
+      const tBonus = tgt.id === carrierId ? -3 : 0;
+      if (pp + pBonus < tp + tBonus) tgt = p;
       else if (
-        pp === tp &&
+        pp + pBonus === tp + tBonus &&
         manhattan(e.pos, p.pos) < manhattan(e.pos, tgt.pos)
       )
         tgt = p;
@@ -1200,6 +1402,7 @@ export class Game {
       if (nx < 0 || ny < 0 || nx >= GRID || ny >= GRID) return null;
       if (this.terrainAt({ x: nx, y: ny }) === "wreckage") return null;
       if (this.livingAt({ x: nx, y: ny })) return null;
+      if (this.structureAt({ x: nx, y: ny })) return null;
       cx = nx;
       cy = ny;
     }

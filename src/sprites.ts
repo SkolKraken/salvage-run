@@ -11,7 +11,9 @@ export type SpriteKey =
   | "juggernaut"
   | "stalker"
   | "striker"
-  | "bruiser";
+  | "bruiser"
+  | "barrager"
+  | "beacon";
 
 interface SpritePalette {
   B: string;
@@ -28,6 +30,8 @@ const PALETTES: Record<SpriteKey, SpritePalette> = {
   stalker: { B: "#f87171", D: "#7f1d1d", A: "#fecaca", G: "#fff1f2", S: "#3a3234" },
   striker: { B: "#fb7185", D: "#881337", A: "#fecdd3", G: "#fff1f2", S: "#3a3234" },
   bruiser: { B: "#b91c1c", D: "#450a0a", A: "#f87171", G: "#ffe4e6", S: "#3a3234" },
+  barrager: { B: "#ea580c", D: "#7c2d12", A: "#fed7aa", G: "#fff7ed", S: "#3a3234" },
+  beacon: { B: "#64748b", D: "#1e293b", A: "#fbbf24", G: "#fef3c7", S: "#334155" },
 };
 
 // prettier-ignore
@@ -126,6 +130,44 @@ const GRIDS: Record<SpriteKey, string[]> = {
     "...DB..D..BD....",
     "..DB...D...BD...",
     "..DD..DDD..DD...",
+  ],
+  // Squat artillery walker — angled mortar tube over a tracked base.
+  barrager: [
+    "................",
+    "..........DD....",
+    ".........DGD....",
+    "........DBAD....",
+    ".......DBAD.....",
+    "......DBAD......",
+    "..DDDDDBBD......",
+    ".DBBBBBBBBD.....",
+    ".DBABBGBBABD....",
+    ".DBBBBBBBBBD....",
+    ".DDDDDDDDDDD....",
+    ".DSDSDSDSDSD....",
+    ".DBBBBBBBBBD....",
+    ".DSDSDSDSDSD....",
+    ".DDDDDDDDDDD....",
+    "................",
+  ],
+  // Lift beacon — dish mast on a broad emitter base (defend this).
+  beacon: [
+    ".......G........",
+    "......DAD.......",
+    ".....DA.AD......",
+    "....DA.G.AD.....",
+    ".....D.D.D......",
+    ".......D........",
+    "......DBD.......",
+    "......DBD.......",
+    ".....DABAD......",
+    ".....DBBBD......",
+    "....DBBABBD.....",
+    "....DBABABD.....",
+    "...DBBBBBBBD....",
+    "...DSSBBBSSD....",
+    "..DDDDDDDDDDD...",
+    "..DDDDDDDDDDD...",
   ],
   // Massive brawler — slab torso, huge fists, tiny head.
   bruiser: [

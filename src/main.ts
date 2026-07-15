@@ -41,6 +41,7 @@ const PAL: Record<ArchetypeId | EnemyKind, Palette> = {
   stalker: { body: "#f87171", dark: "#8f3838", accent: "#fee2e2" },
   striker: { body: "#fb7185", dark: "#9f1239", accent: "#fecdd3" },
   bruiser: { body: "#b91c1c", dark: "#5a0e0e", accent: "#fecaca" },
+  barrager: { body: "#ea580c", dark: "#7c2d12", accent: "#fed7aa" },
 };
 
 // --- DOM ---
@@ -310,11 +311,11 @@ function objectiveBrief(): string {
   const o = game.objective;
   switch (o.kind) {
     case "extract":
-      return "Get any mech to the amber CACHE tile — or destroy every hostile.";
+      return "Grab the CACHE and haul it to the green EXFIL zone. The carrier is slowed and can't fire — and grabbing it trips an alarm.";
     case "hold":
       return `Hold the marked position for ${o.turnsRequired} turns.`;
     case "survive":
-      return `Survive ${o.turnsRequired} turns. Reinforcements will not stop.`;
+      return `Protect the LIFT BEACON for ${o.turnsRequired} turns. If it falls, the run is over.`;
     default:
       return "Destroy every hostile.";
   }
@@ -403,12 +404,21 @@ function handleClick(t: Vec): void {
     return;
   }
   if (sel) {
+    const wasCarrier = game.objective.carrierId;
+    const spawnsBefore = game.pendingSpawns.length;
     const crossed = game.moveUnit(sel, t);
     if (crossed) {
       for (const f of crossed) spawnFloater(f, `-${FIRE_DAMAGE}`, "#fb923c");
       if (crossed.length) {
         flashUnit(sel.id);
         shake += crossed.length * 2;
+      }
+      if (game.objective.carrierId !== wasCarrier && game.objective.carrierId !== null) {
+        spawnFloater(sel.pos, "CACHE SECURED", "#fbbf24");
+        for (const s of game.pendingSpawns.slice(spawnsBefore)) {
+          spawnFloater(s.pos, "ALARM TRIPPED", "#f87171");
+        }
+        shake += 3;
       }
       if (sel.hp === 0) {
         noteDying(sel.id);
@@ -664,7 +674,7 @@ function showEndOverlay(): void {
   overlayText.className = "overlay-text " + (win ? "win" : "lose");
   overlaySub.textContent = win
     ? `All ${MISSIONS_PER_RUN} missions cleared.`
-    : `The lance fell on mission ${game.mission} of ${MISSIONS_PER_RUN}.`;
+    : `${game.failReason ?? "The lance is down."} Mission ${game.mission} of ${MISSIONS_PER_RUN}.`;
   overlay.classList.remove("hidden");
 }
 
@@ -816,7 +826,8 @@ function renderSalvageBay(): void {
 // --- UI ---
 function objectiveLabel(): string {
   const o = game.objective;
-  if (o.kind === "extract") return " · REACH THE CACHE";
+  if (o.kind === "extract")
+    return o.carrierId !== null ? " · EXFIL THE CARRIER" : " · RECOVER THE CACHE";
   if (o.kind === "hold")
     return ` · HOLD ${o.progress}/${o.turnsRequired}`;
   if (o.kind === "survive")
@@ -849,6 +860,8 @@ function hintText(): string {
         return `${u.name} is mired in water — it can fire but not move.`;
       if (game.terrainAt(u.pos) === "fire")
         return `${u.name} is in fire — move clear or it keeps burning.`;
+      if (game.objective.carrierId === u.id)
+        return `${u.name} is hauling the cache — slowed, can't fire. Reach the green EXFIL zone.`;
       if (game.pendingSpawns.length > 0)
         return "Reinforcements inbound — stand on a drop zone to block it (1 dmg/turn).";
       if (u.hasMoved && u.hasFired)
@@ -1321,8 +1334,63 @@ function drawTelegraphMarker(e: Unit): void {
   ctx.fillText(`${dmg}`, a.x, it.attackPos.y * TILE + TILE - 6);
 }
 
+/** The exfil strip on the player's edge (extract missions). */
+function drawExfilZone(): void {
+  if (game.objective.kind !== "extract" || game.exfilTiles.length === 0) return;
+  if (game.phase !== "player" && game.phase !== "enemy") return;
+  const pulse = 0.5 + 0.5 * Math.sin(time * 3);
+  for (const t of game.exfilTiles) {
+    ctx.fillStyle = `rgba(74,222,128,${0.08 + 0.08 * pulse})`;
+    ctx.fillRect(t.x * TILE, t.y * TILE, TILE, TILE);
+    ctx.strokeStyle = `rgba(74,222,128,${0.4 + 0.35 * pulse})`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(t.x * TILE + 2, t.y * TILE + 2, TILE - 4, TILE - 4);
+    ctx.setLineDash([]);
+  }
+  const mid = game.exfilTiles[Math.floor(game.exfilTiles.length / 2)];
+  ctx.fillStyle = "#4ade80";
+  ctx.font = 'bold 8px "Segoe UI", sans-serif';
+  ctx.textAlign = "center";
+  ctx.fillText("EXFIL", mid.x * TILE + TILE / 2, mid.y * TILE + TILE - 5);
+}
+
+/** Emplacements (the lift beacon) with HP pips. */
+function drawStructures(): void {
+  for (const s of game.structures) {
+    if (s.hp <= 0) continue;
+    const c = center(s.pos.x, s.pos.y);
+    const pulse = 0.5 + 0.5 * Math.sin(time * 2.2);
+    ctx.strokeStyle = `rgba(251,191,36,${0.15 + 0.2 * pulse})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y + 4, 22 + pulse * 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,0.4)";
+    ctx.beginPath();
+    ctx.ellipse(c.x, c.y + 20, 17, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.translate(c.x, c.y);
+    ctx.imageSmoothingEnabled = false;
+    const frame = Math.floor(time * 2.2) % 2;
+    ctx.drawImage(getSprite("beacon", frame), -24, -26, 48, 48);
+    ctx.restore();
+    const pipW = 4;
+    const gap = 1;
+    const total = s.maxHp * pipW + (s.maxHp - 1) * gap;
+    let x = c.x - total / 2;
+    for (let i = 0; i < s.maxHp; i++) {
+      ctx.fillStyle = i < s.hp ? "#fbbf24" : "#2d3744";
+      ctx.fillRect(x, c.y - 32, pipW, 3);
+      x += pipW + gap;
+    }
+  }
+}
+
 /** Amber marker on the extract cache / hold position. */
 function drawObjectiveMarker(): void {
+  drawExfilZone();
   const o = game.objective;
   if (!o.tile) return;
   if (game.phase !== "player" && game.phase !== "enemy") return;
@@ -1530,6 +1598,20 @@ function drawUnits(): void {
     }
 
     if (alive) drawHpPips(cx, cy, u, palFor(u).body);
+
+    // Cache-carrier marker: bobbing amber diamond overhead.
+    if (alive && game.objective.carrierId === u.id) {
+      const dy = Math.sin(time * 4) * 2;
+      const top = cy - 40 + dy;
+      ctx.fillStyle = "#fbbf24";
+      ctx.beginPath();
+      ctx.moveTo(cx, top - 5);
+      ctx.lineTo(cx + 4, top);
+      ctx.lineTo(cx, top + 5);
+      ctx.lineTo(cx - 4, top);
+      ctx.closePath();
+      ctx.fill();
+    }
   }
 }
 
@@ -1645,6 +1727,7 @@ function render(): void {
     drawHover();
   }
   drawFlashes();
+  drawStructures();
   drawUnits();
   if (game.phase === "player") {
     for (const e of game.enemies()) drawTelegraphMarker(e);
