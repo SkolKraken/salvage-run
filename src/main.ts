@@ -216,6 +216,26 @@ function spawnExplosion(pos: Vec): void {
   }
 }
 
+/** Small impact puff on a threatened tile (lighter than a death explosion). */
+function spawnImpact(pos: Vec): void {
+  const cx = pos.x * TILE + TILE / 2;
+  const cy = pos.y * TILE + TILE / 2;
+  for (let i = 0; i < 5; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const speed = 30 + Math.random() * 40;
+    particles.push({
+      x: cx,
+      y: cy,
+      vx: Math.cos(ang) * speed,
+      vy: Math.sin(ang) * speed - 15,
+      color: i % 2 === 0 ? "#fca5a5" : "#f97316",
+      life: 0.25 + Math.random() * 0.15,
+      maxLife: 0.4,
+      size: 1.5 + Math.random() * 1.5,
+    });
+  }
+}
+
 function flashElement(el: Element | null): void {
   if (!el) return;
   el.classList.remove("flash");
@@ -426,42 +446,42 @@ function endTurnFlow(): void {
           window.setTimeout(step, 220);
           return;
         }
-        const victimId = res.victim?.id;
-        const victimPos = { ...res.pos };
-        const victimKilled = !!res.victim && res.victim.hp === 0;
-        const dmg = res.damage;
-        const hitting = !!res.victim;
-        const knockTo = res.knockTo;
-        if (victimKilled && victimId !== undefined) noteDying(victimId);
+        const aim = { ...res.aim };
+        const tiles = res.tiles;
+        const hits = res.hits;
+        for (const h of hits) if (h.killed) noteDying(h.id);
         projectiles.push({
           kind: projectileKindFor(e.weapons[0]),
           from: { ...e.pos },
-          to: victimPos,
+          to: aim,
           color: palFor(e).body,
           life: 0.2,
           maxLife: 0.2,
           done: false,
           onLand: () => {
-            if (hitting && victimId !== undefined) {
-              spawnFloater(
-                victimPos,
-                dmg > 0 ? `-${dmg}` : "BLOCKED",
-                dmg > 0 ? "#fca5a5" : "#94a3b8",
-              );
-              flashUnit(victimId);
-              shake += Math.max(2, dmg * 1.5);
-              if (knockTo) {
-                const r = rstate.get(victimId);
-                if (r) {
-                  r.vx = knockTo.x;
-                  r.vy = knockTo.y;
+            for (const t of tiles) spawnImpact(t);
+            if (hits.length > 0) {
+              for (const h of hits) {
+                spawnFloater(
+                  h.pos,
+                  h.damage > 0 ? `-${h.damage}` : "BLOCKED",
+                  h.damage > 0 ? "#fca5a5" : "#94a3b8",
+                );
+                flashUnit(h.id);
+                shake += Math.max(2, h.damage * 1.5);
+                if (h.knockTo) {
+                  const r = rstate.get(h.id);
+                  if (r) {
+                    r.vx = h.knockTo.x;
+                    r.vy = h.knockTo.y;
+                  }
+                  spawnFloater(h.knockTo, "PUSHED", "#fcd34d");
+                  shake += 3;
                 }
-                spawnFloater(knockTo, "PUSHED", "#fcd34d");
-                shake += 3;
+                if (h.killed) spawnExplosion(h.knockTo ?? h.pos);
               }
-              if (victimKilled) spawnExplosion(knockTo ?? victimPos);
             } else {
-              spawnFloater(victimPos, "MISS", "#94a3b8");
+              spawnFloater(aim, "MISS", "#94a3b8");
             }
             refreshUI();
             if (game.phase === "runFailed") {
@@ -480,6 +500,21 @@ function endTurnFlow(): void {
 function finishEnemyPhase(): void {
   const before = new Map(game.players().map((u) => [u.id, u.heat]));
   game.endEnemyPhase();
+  syncRenderState();
+  for (const p of game.recentSpawns) {
+    spawnImpact(p);
+    spawnFloater(p, "REINFORCED", "#f87171");
+    shake += 3;
+  }
+  for (const b of game.recentSpawnBlocks) {
+    spawnFloater(b.pos, `-${b.damage} BLOCKING`, "#fcd34d");
+    flashUnit(b.id);
+    const u = game.units.find((x) => x.id === b.id);
+    if (u && u.hp === 0) {
+      noteDying(b.id);
+      spawnExplosion(b.pos);
+    }
+  }
   for (const h of game.recentHazardHits) {
     spawnFloater(h.pos, `-${h.damage}`, "#fb923c");
     flashUnit(h.id);
@@ -692,6 +727,16 @@ function renderSalvageBay(): void {
 }
 
 // --- UI ---
+function objectiveLabel(): string {
+  const o = game.objective;
+  if (o.kind === "extract") return " · REACH THE CACHE";
+  if (o.kind === "hold")
+    return ` · HOLD ${o.progress}/${o.turnsRequired}`;
+  if (o.kind === "survive")
+    return ` · SURVIVE ${Math.min(game.turn, o.turnsRequired)}/${o.turnsRequired}`;
+  return "";
+}
+
 function hintText(): string {
   switch (game.phase) {
     case "deploy":
@@ -717,6 +762,8 @@ function hintText(): string {
         return `${u.name} is mired in water — it can fire but not move.`;
       if (game.terrainAt(u.pos) === "fire")
         return `${u.name} is in fire — move clear or it keeps burning.`;
+      if (game.pendingSpawns.length > 0)
+        return "Reinforcements inbound — stand on a drop zone to block it (1 dmg/turn).";
       if (u.hasMoved && u.hasFired)
         return `${u.name} has acted — select another mech (Tab).`;
       if (game.canFire(u))
@@ -855,7 +902,9 @@ function refreshUI(): void {
     banner.textContent = "RUN COMPLETE";
     banner.className = "banner player";
   } else {
-    banner.textContent = `MISSION ${game.mission} OF ${MISSIONS_PER_RUN} · YOUR TURN`;
+    banner.textContent =
+      `MISSION ${game.mission} OF ${MISSIONS_PER_RUN} · YOUR TURN` +
+      objectiveLabel();
     banner.className = "banner player";
   }
 
@@ -1088,8 +1137,26 @@ function drawTelegraphGround(e: Unit): void {
   }
   if (!it.attackPos) return;
   const a = center(it.attackPos.x, it.attackPos.y);
-  ctx.fillStyle = "rgba(248,113,113,0.14)";
-  ctx.fillRect(it.attackPos.x * TILE, it.attackPos.y * TILE, TILE, TILE);
+  const threat = it.attackTiles.length > 0 ? it.attackTiles : [it.attackPos];
+  for (const t of threat) {
+    ctx.fillStyle = "rgba(248,113,113,0.14)";
+    ctx.fillRect(t.x * TILE, t.y * TILE, TILE, TILE);
+    if (!eq(t, it.attackPos)) {
+      // secondary AoE tile: corner ticks so it reads as "in the blast"
+      const pulse = 0.35 + 0.25 * Math.sin(time * 5);
+      ctx.strokeStyle = `rgba(248,113,113,${pulse})`;
+      ctx.lineWidth = 2;
+      const x = t.x * TILE;
+      const y = t.y * TILE;
+      const s = 10;
+      ctx.beginPath();
+      ctx.moveTo(x + 3, y + 3 + s); ctx.lineTo(x + 3, y + 3); ctx.lineTo(x + 3 + s, y + 3);
+      ctx.moveTo(x + TILE - 3 - s, y + 3); ctx.lineTo(x + TILE - 3, y + 3); ctx.lineTo(x + TILE - 3, y + 3 + s);
+      ctx.moveTo(x + 3, y + TILE - 3 - s); ctx.lineTo(x + 3, y + TILE - 3); ctx.lineTo(x + 3 + s, y + TILE - 3);
+      ctx.moveTo(x + TILE - 3 - s, y + TILE - 3); ctx.lineTo(x + TILE - 3, y + TILE - 3); ctx.lineTo(x + TILE - 3, y + TILE - 3 - s);
+      ctx.stroke();
+    }
+  }
   if (it.knockbackPos) {
     const kPulse = 0.5 + 0.5 * Math.sin(time * 5);
     ctx.fillStyle = `rgba(252,211,77,${0.12 + 0.1 * kPulse})`;
@@ -1165,6 +1232,77 @@ function drawTelegraphMarker(e: Unit): void {
   ctx.font = 'bold 11px "Segoe UI", sans-serif';
   ctx.textAlign = "center";
   ctx.fillText(`${dmg}`, a.x, it.attackPos.y * TILE + TILE - 6);
+}
+
+/** Amber marker on the extract cache / hold position. */
+function drawObjectiveMarker(): void {
+  const o = game.objective;
+  if (!o.tile) return;
+  if (game.phase !== "player" && game.phase !== "enemy") return;
+  const c = center(o.tile.x, o.tile.y);
+  const pulse = 0.5 + 0.5 * Math.sin(time * 3);
+  ctx.fillStyle = `rgba(251,191,36,${0.08 + 0.07 * pulse})`;
+  ctx.fillRect(o.tile.x * TILE, o.tile.y * TILE, TILE, TILE);
+  ctx.strokeStyle = `rgba(251,191,36,${0.5 + 0.4 * pulse})`;
+  ctx.lineWidth = 2;
+  if (o.kind === "extract") {
+    // cache crate: diamond with a core glint
+    const r = 12 + pulse * 2;
+    ctx.beginPath();
+    ctx.moveTo(c.x, c.y - r);
+    ctx.lineTo(c.x + r, c.y);
+    ctx.lineTo(c.x, c.y + r);
+    ctx.lineTo(c.x - r, c.y);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.fillStyle = `rgba(251,191,36,${0.5 + 0.4 * pulse})`;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#fbbf24";
+    ctx.font = 'bold 8px "Segoe UI", sans-serif';
+    ctx.textAlign = "center";
+    ctx.fillText("CACHE", c.x, o.tile.y * TILE + TILE - 5);
+  } else if (o.kind === "hold") {
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 14 + pulse * 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = "#fbbf24";
+    ctx.font = 'bold 8px "Segoe UI", sans-serif';
+    ctx.textAlign = "center";
+    ctx.fillText(
+      `HOLD ${game.objective.progress}/${game.objective.turnsRequired}`,
+      c.x,
+      o.tile.y * TILE + TILE - 5,
+    );
+  }
+}
+
+/** Pulsing drop-zone diamonds where reinforcements will arrive. */
+function drawPendingSpawns(): void {
+  for (const s of game.pendingSpawns) {
+    const c = center(s.pos.x, s.pos.y);
+    const pulse = 0.5 + 0.5 * Math.sin(time * 4);
+    const r = 16 + pulse * 3;
+    ctx.fillStyle = `rgba(248,113,113,${0.06 + 0.06 * pulse})`;
+    ctx.fillRect(s.pos.x * TILE, s.pos.y * TILE, TILE, TILE);
+    ctx.strokeStyle = `rgba(248,113,113,${0.45 + 0.4 * pulse})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(c.x, c.y - r);
+    ctx.lineTo(c.x + r, c.y);
+    ctx.lineTo(c.x, c.y + r);
+    ctx.lineTo(c.x - r, c.y);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.fillStyle = `rgba(254,202,202,${0.75 + 0.25 * pulse})`;
+    ctx.font = 'bold 12px "Segoe UI", sans-serif';
+    ctx.textAlign = "center";
+    ctx.fillText(String(s.turnsUntil), c.x, c.y + 4);
+    ctx.fillStyle = "#fca5a5";
+    ctx.font = 'bold 8px "Segoe UI", sans-serif';
+    ctx.fillText("DROP ZONE", c.x, s.pos.y * TILE + TILE - 5);
+  }
 }
 
 function drawFireTargets(): void {
@@ -1448,10 +1586,12 @@ function render(): void {
   drawBoard();
   drawWreckMarks();
   drawTerrain();
+  drawObjectiveMarker();
   if (game.phase === "player") {
     drawSelectionRing();
     drawMoveTiles();
     for (const e of game.enemies()) drawTelegraphGround(e);
+    drawPendingSpawns();
     drawFireTargets();
     drawHover();
   }

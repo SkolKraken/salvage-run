@@ -37,6 +37,13 @@ export interface Vec {
   y: number;
 }
 
+/**
+ * Area a weapon threatens around its aim tile:
+ * single = aim tile only; line2 = aim tile + the tile behind it (away from
+ * the shooter); cross = aim tile + its 4 orthogonal neighbors.
+ */
+export type WeaponShape = "single" | "line2" | "cross";
+
 export interface Weapon {
   name: string;
   damage: number;
@@ -44,6 +51,8 @@ export interface Weapon {
   heat: number;
   /** Tiles to push the target along the attack vector after damage. */
   knockback?: number;
+  /** Threatened area (defaults to "single"). */
+  shape?: WeaponShape;
 }
 
 export interface Archetype {
@@ -127,7 +136,7 @@ export const ENEMY_ARCHETYPES: Record<EnemyKind, EnemyArchetype> = {
     hp: 5,
     moveRange: 3,
     heatCap: 6,
-    weapon: { name: "Scattergun", damage: 2, range: 2, heat: 0 },
+    weapon: { name: "Scattergun", damage: 2, range: 2, heat: 0, shape: "line2" },
   },
   striker: {
     id: "striker",
@@ -147,19 +156,109 @@ export const ENEMY_ARCHETYPES: Record<EnemyKind, EnemyArchetype> = {
   },
 };
 
-function missionComposition(mission: number): EnemyKind[] {
-  if (mission <= 1) return ["stalker", "stalker", "stalker"];
-  if (mission === 2) return ["stalker", "stalker", "striker"];
-  return ["stalker", "stalker", "bruiser"];
+/** A reinforcement wave: on `turn`, spawn markers appear; units arrive next turn. */
+export interface WaveDef {
+  turn: number;
+  spawns: EnemyKind[];
+}
+
+/** A telegraphed incoming reinforcement. Blockable by standing on the tile. */
+export interface PendingSpawn {
+  pos: Vec;
+  turnsUntil: number;
+  kind: EnemyKind;
+}
+
+export type ObjectiveKind = "killAll" | "extract" | "hold" | "survive";
+
+export type ObjectiveDef =
+  | { kind: "killAll" }
+  | { kind: "extract" }
+  | { kind: "hold"; turns: number }
+  | { kind: "survive"; turns: number };
+
+/** Runtime objective state for the current mission. */
+export interface ObjectiveState {
+  kind: ObjectiveKind;
+  /** extract: the cache tile; hold: the position to defend. */
+  tile: Vec | null;
+  /** hold: turns of occupation needed; survive: turns to outlast. */
+  turnsRequired: number;
+  /** hold: turns of occupation banked so far. */
+  progress: number;
+}
+
+export interface MissionDef {
+  enemies: EnemyKind[];
+  waves: WaveDef[];
+  /** Endless pressure: a wave every N turns (used by survive missions). */
+  recurringWave?: { every: number; spawns: EnemyKind[] };
+  objective: ObjectiveDef;
+}
+
+/** The 3-mission run (index = mission - 1). */
+export const MISSION_DEFS: MissionDef[] = [
+  {
+    enemies: ["stalker", "stalker", "stalker"],
+    waves: [],
+    objective: { kind: "killAll" },
+  },
+  {
+    enemies: ["stalker", "stalker", "striker"],
+    waves: [{ turn: 3, spawns: ["stalker", "stalker"] }],
+    objective: { kind: "extract" },
+  },
+  {
+    enemies: ["stalker", "stalker", "bruiser"],
+    waves: [
+      { turn: 2, spawns: ["stalker"] },
+      { turn: 5, spawns: ["striker"] },
+    ],
+    recurringWave: { every: 4, spawns: ["stalker"] },
+    objective: { kind: "survive", turns: 7 },
+  },
+];
+
+function missionDef(mission: number): MissionDef {
+  return MISSION_DEFS[mission - 1] ?? MISSION_DEFS[0];
 }
 
 /** A committed enemy plan, revealed during the player's turn. */
 export interface Intent {
   movePos: Vec;
+  /** Aim tile (null = no attack this turn). */
   attackPos: Vec | null;
+  /** Every tile the attack threatens, including the aim tile. */
+  attackTiles: Vec[];
   damage: number;
   /** Tile the victim will be pushed to (only set for knockback weapons). */
   knockbackPos: Vec | null;
+}
+
+function inBounds(p: Vec): boolean {
+  return p.x >= 0 && p.y >= 0 && p.x < GRID && p.y < GRID;
+}
+
+/** Tiles threatened by a shot fired from `from` aimed at `aim`. */
+export function aoeTiles(from: Vec, aim: Vec, shape: WeaponShape): Vec[] {
+  const tiles: Vec[] = [{ ...aim }];
+  if (shape === "line2") {
+    const dx = aim.x - from.x;
+    const dy = aim.y - from.y;
+    const step =
+      Math.abs(dx) >= Math.abs(dy)
+        ? { x: Math.sign(dx), y: 0 }
+        : { x: 0, y: Math.sign(dy) };
+    tiles.push({ x: aim.x + step.x, y: aim.y + step.y });
+  } else if (shape === "cross") {
+    tiles.push(
+      { x: aim.x + 1, y: aim.y },
+      { x: aim.x - 1, y: aim.y },
+      { x: aim.x, y: aim.y + 1 },
+      { x: aim.x, y: aim.y - 1 },
+    );
+  }
+  return tiles.filter(inBounds);
 }
 
 export interface Unit {
@@ -294,6 +393,23 @@ export class Game {
   recentHazardHits: HazardHit[] = [];
   /** Tiles where a mech was destroyed this mission (visual debris). */
   wreckMarks: Vec[] = [];
+  /** Player-turn counter within the current mission (1-based). */
+  turn = 0;
+  /** Telegraphed reinforcements that have not arrived yet. */
+  pendingSpawns: PendingSpawn[] = [];
+  /** Tiles where reinforcements arrived at the start of this player turn. */
+  recentSpawns: Vec[] = [];
+  /** Damage dealt to units blocking a spawn tile this turn. */
+  recentSpawnBlocks: HazardHit[] = [];
+  /** The current mission's objective. */
+  objective: ObjectiveState = {
+    kind: "killAll",
+    tile: null,
+    turnsRequired: 0,
+    progress: 0,
+  };
+  /** Set when the objective is achieved (checked by checkEnd). */
+  private objectiveComplete = false;
   mission = 0;
   salvage = 0;
   cores = 0;
@@ -356,32 +472,165 @@ export class Game {
       u.selectedWeapon = 0;
       this.units.push(u);
     });
-    const composition = missionComposition(this.mission);
-    composition.forEach((kind, i) => {
-      const a = ENEMY_ARCHETYPES[kind];
-      const sp = ENEMY_SPAWNS[i] ?? ENEMY_SPAWNS[0];
-      this.units.push({
-        id: this.nextId++,
-        team: "enemy",
-        name: `${a.name} ${i + 1}`,
-        archetype: null,
-        enemyKind: kind,
-        hp: a.hp,
-        maxHp: a.hp,
-        pos: { ...sp },
-        moveRange: a.moveRange,
-        heat: 0,
-        maxHeat: a.heatCap,
-        weapons: [{ ...a.weapon }],
-        selectedWeapon: 0,
-        hasMoved: false,
-        hasFired: false,
-        nextTurnImpair: "none",
-        impaired: "none",
-        intent: null,
-      });
+    const def = missionDef(this.mission);
+    def.enemies.forEach((kind, i) => {
+      this.spawnEnemy(kind, ENEMY_SPAWNS[i] ?? ENEMY_SPAWNS[0]);
     });
+    this.turn = 0;
+    this.pendingSpawns = [];
+    this.recentSpawns = [];
+    this.recentSpawnBlocks = [];
+    this.objectiveComplete = false;
+    this.objective = this.buildObjective(def.objective);
     this.startPlayerTurn(true);
+  }
+
+  private spawnEnemy(kind: EnemyKind, pos: Vec): Unit {
+    const a = ENEMY_ARCHETYPES[kind];
+    const n = this.units.filter((u) => u.enemyKind === kind).length + 1;
+    const u: Unit = {
+      id: this.nextId++,
+      team: "enemy",
+      name: `${a.name} ${n}`,
+      archetype: null,
+      enemyKind: kind,
+      hp: a.hp,
+      maxHp: a.hp,
+      pos: { ...pos },
+      moveRange: a.moveRange,
+      heat: 0,
+      maxHeat: a.heatCap,
+      weapons: [{ ...a.weapon }],
+      selectedWeapon: 0,
+      hasMoved: false,
+      hasFired: false,
+      nextTurnImpair: "none",
+      impaired: "none",
+      intent: null,
+    };
+    this.units.push(u);
+    return u;
+  }
+
+  /**
+   * Resolve telegraphed spawns at the start of a player turn. A unit standing
+   * on a spawn tile blocks it: the arrival is delayed and the blocker takes
+   * 1 damage per turn spent blocking.
+   */
+  private resolveSpawns(): void {
+    const remaining: PendingSpawn[] = [];
+    for (const s of this.pendingSpawns) {
+      if (s.turnsUntil > 1) {
+        remaining.push({ ...s, turnsUntil: s.turnsUntil - 1 });
+        continue;
+      }
+      const blocker = this.livingAt(s.pos);
+      if (blocker) {
+        this.applyDamage(blocker, 1);
+        this.recentSpawnBlocks.push({
+          id: blocker.id,
+          pos: { ...s.pos },
+          damage: 1,
+        });
+        remaining.push(s);
+      } else {
+        this.spawnEnemy(s.kind, s.pos);
+        this.recentSpawns.push({ ...s.pos });
+      }
+    }
+    this.pendingSpawns = remaining;
+  }
+
+  /** Materialize the mission's objective, picking marker tiles on this map. */
+  private buildObjective(def: ObjectiveDef): ObjectiveState {
+    if (def.kind === "extract") {
+      return {
+        kind: "extract",
+        tile: this.pickObjectiveTile(1, 3),
+        turnsRequired: 0,
+        progress: 0,
+      };
+    }
+    if (def.kind === "hold") {
+      return {
+        kind: "hold",
+        tile: this.pickObjectiveTile(4, 7),
+        turnsRequired: def.turns,
+        progress: 0,
+      };
+    }
+    if (def.kind === "survive") {
+      return {
+        kind: "survive",
+        tile: null,
+        turnsRequired: def.turns,
+        progress: 0,
+      };
+    }
+    return { kind: "killAll", tile: null, turnsRequired: 0, progress: 0 };
+  }
+
+  /** Random clear tile with y in [yMin, yMax], biased toward the middle columns. */
+  private pickObjectiveTile(yMin: number, yMax: number): Vec {
+    const cands: Vec[] = [];
+    for (let y = yMin; y <= yMax; y++) {
+      for (let x = 2; x <= GRID - 3; x++) {
+        const p = { x, y };
+        if (this.terrainAt(p) !== "open") continue;
+        if (this.livingAt(p)) continue;
+        cands.push(p);
+      }
+    }
+    if (cands.length === 0) return { x: Math.floor(GRID / 2), y: yMin };
+    return cands[Math.floor(Math.random() * cands.length)];
+  }
+
+  /** A player mech reaching the extract cache completes the objective. */
+  private touchObjective(u: Unit): void {
+    if (this.objectiveComplete) return;
+    if (this.objective.kind !== "extract" || !this.objective.tile) return;
+    if (u.team !== "player" || u.hp <= 0) return;
+    if (eq(u.pos, this.objective.tile)) {
+      this.objectiveComplete = true;
+    }
+  }
+
+  /** Queue up spawn markers for waves scheduled to telegraph this turn. */
+  private enqueueWaves(): void {
+    const def = missionDef(this.mission);
+    for (const w of def.waves) {
+      if (w.turn !== this.turn) continue;
+      for (const kind of w.spawns) {
+        const pos = this.pickSpawnTile();
+        if (pos) this.pendingSpawns.push({ pos, kind, turnsUntil: 1 });
+      }
+    }
+    const rec = def.recurringWave;
+    if (rec && this.turn > 1 && this.turn % rec.every === 0) {
+      for (const kind of rec.spawns) {
+        const pos = this.pickSpawnTile();
+        if (pos) this.pendingSpawns.push({ pos, kind, turnsUntil: 1 });
+      }
+    }
+  }
+
+  /** Free tile on the enemy edge of the map for a reinforcement to arrive. */
+  private pickSpawnTile(): Vec | null {
+    for (const y of [0, 1]) {
+      const cands: Vec[] = [];
+      for (let x = 0; x < GRID; x++) {
+        const p = { x, y };
+        const t = this.terrainAt(p);
+        if (t !== "open" && t !== "cover") continue;
+        if (this.livingAt(p)) continue;
+        if (this.pendingSpawns.some((s) => eq(s.pos, p))) continue;
+        cands.push(p);
+      }
+      if (cands.length > 0) {
+        return cands[Math.floor(Math.random() * cands.length)];
+      }
+    }
+    return null;
   }
 
   /** Advance from the Salvage Bay into the next mission. */
@@ -557,7 +806,8 @@ export class Game {
     if (dt === "pit") u.nextTurnImpair = "full";
     else if (dt === "water") u.nextTurnImpair = "move";
 
-    if (fireCrossed.length) this.checkEnd();
+    this.touchObjective(u);
+    if (fireCrossed.length || this.objectiveComplete) this.checkEnd();
     return fireCrossed;
   }
 
@@ -637,31 +887,48 @@ export class Game {
     e.pos = { x: dest.x, y: dest.y };
   }
 
-  /** Enemy fires at its telegraphed tile, hitting whatever player is there. */
+  /**
+   * Enemy fires at its telegraphed tiles. Every unit standing in the
+   * threatened area is hit — including other enemies (AoE friendly fire).
+   * Knockback applies only to the unit on the aim tile.
+   */
   enemyExecuteAttack(
     e: Unit,
   ): {
-    pos: Vec;
-    damage: number;
-    victim: Unit | null;
-    knockTo: Vec | null;
+    aim: Vec;
+    tiles: Vec[];
+    hits: {
+      id: number;
+      pos: Vec;
+      damage: number;
+      killed: boolean;
+      knockTo: Vec | null;
+    }[];
   } | null {
     if (!e.intent || !e.intent.attackPos || e.hp <= 0) return null;
-    const pos = e.intent.attackPos;
-    const victim =
-      this.units.find(
-        (u) => u.team === "player" && u.hp > 0 && eq(u.pos, pos),
-      ) ?? null;
-    const dmg = this.damageAfterCover(e.intent.damage, pos);
-    let knockTo: Vec | null = null;
-    if (victim) {
+    const aim = e.intent.attackPos;
+    const tiles =
+      e.intent.attackTiles.length > 0 ? e.intent.attackTiles : [aim];
+    const hits: {
+      id: number;
+      pos: Vec;
+      damage: number;
+      killed: boolean;
+      knockTo: Vec | null;
+    }[] = [];
+
+    for (const pos of tiles) {
+      const victim = this.units.find(
+        (u) => u.id !== e.id && u.hp > 0 && eq(u.pos, pos),
+      );
+      if (!victim) continue;
+      const dmg = this.damageAfterCover(e.intent.damage, pos);
       this.applyDamage(victim, dmg);
-      if (victim.hp > 0 && e.intent.knockbackPos) {
+      let knockTo: Vec | null = null;
+      if (victim.hp > 0 && eq(pos, aim) && e.intent.knockbackPos) {
         const kp = e.intent.knockbackPos;
-        const inBounds =
-          kp.x >= 0 && kp.y >= 0 && kp.x < GRID && kp.y < GRID;
         const blocked =
-          !inBounds ||
+          !inBounds(kp) ||
           this.terrainAt(kp) === "wreckage" ||
           !!this.livingAt(kp);
         if (!blocked) {
@@ -677,11 +944,21 @@ export class Game {
             victim.heat = 0;
             victim.nextTurnImpair = "move";
           }
+          // Being punched onto the extract cache still counts.
+          this.touchObjective(victim);
         }
       }
-      this.checkEnd();
+      hits.push({
+        id: victim.id,
+        pos: { ...pos },
+        damage: dmg,
+        killed: victim.hp === 0,
+        knockTo,
+      });
     }
-    return { pos, damage: dmg, victim, knockTo };
+
+    if (hits.length > 0) this.checkEnd();
+    return { aim: { ...aim }, tiles: tiles.map((t) => ({ ...t })), hits };
   }
 
   endEnemyPhase(): void {
@@ -692,13 +969,21 @@ export class Game {
   /** Resolve a mission outcome: award salvage on a win, or end the run. */
   private checkEnd(): void {
     if (this.phase !== "player" && this.phase !== "enemy") return;
-    if (this.enemies().length === 0) {
+    if (this.players().length === 0) {
+      this.phase = "runFailed";
+      return;
+    }
+    // Kill-all clears any mission without endless reinforcements; otherwise
+    // the objective is the only way out.
+    const boardCleared =
+      this.enemies().length === 0 &&
+      this.pendingSpawns.length === 0 &&
+      !missionDef(this.mission).recurringWave;
+    if (this.objectiveComplete || boardCleared) {
       this.lastSalvageEarned = MISSION_BASE_SALVAGE + this.players().length;
       this.salvage += this.lastSalvageEarned;
       this.phase =
         this.mission >= MISSIONS_PER_RUN ? "runComplete" : "salvage";
-    } else if (this.players().length === 0) {
-      this.phase = "runFailed";
     }
   }
 
@@ -720,8 +1005,29 @@ export class Game {
     this.wreckMarks.push({ x: u.pos.x, y: u.pos.y });
   }
 
+  /** Hold/survive objectives advance at the start of each player turn. */
+  private tickObjective(): void {
+    const o = this.objective;
+    if (o.kind === "hold" && o.tile) {
+      const occ = this.livingAt(o.tile);
+      if (occ && occ.team === "player") {
+        o.progress += 1;
+        if (o.progress >= o.turnsRequired) this.objectiveComplete = true;
+      }
+    } else if (o.kind === "survive") {
+      if (this.turn > o.turnsRequired) this.objectiveComplete = true;
+    }
+  }
+
   private startPlayerTurn(first: boolean): void {
+    this.phase = "player";
+    this.turn += 1;
     this.recentHazardHits = [];
+    this.recentSpawns = [];
+    this.recentSpawnBlocks = [];
+    this.resolveSpawns();
+    this.enqueueWaves();
+    this.tickObjective();
     for (const u of this.units) {
       if (u.team !== "player" || u.hp <= 0) continue;
       u.impaired = u.nextTurnImpair;
@@ -743,10 +1049,7 @@ export class Game {
       }
     }
     this.checkEnd();
-    this.planEnemies();
-    if (this.phase !== "runFailed" && this.phase !== "runComplete") {
-      this.phase = "player";
-    }
+    if (this.phase === "player") this.planEnemies();
     const active =
       this.players().find((u) => !u.hasMoved || !u.hasFired) ??
       this.players()[0];
@@ -762,16 +1065,18 @@ export class Game {
     const projectedHp = new Map<number, number>();
     for (const p of this.players()) projectedHp.set(p.id, p.hp);
 
+    // Clear first so planOne can tell freshly-planned peers (non-null
+    // intent) from peers still carrying last turn's stale plan.
+    for (const e of this.enemies()) e.intent = null;
+
     for (const e of this.enemies()) {
       e.intent = this.planOne(e, projectedHp);
       if (e.intent.attackPos) {
-        const target = this.players().find(
-          (p) => eq(p.pos, e.intent!.attackPos!),
-        );
-        if (target) {
-          const dmg = this.damageAfterCover(e.intent.damage, e.intent.attackPos);
-          const remaining =
-            (projectedHp.get(target.id) ?? target.hp) - dmg;
+        for (const tile of e.intent.attackTiles) {
+          const target = this.players().find((p) => eq(p.pos, tile));
+          if (!target) continue;
+          const dmg = this.damageAfterCover(e.intent.damage, tile);
+          const remaining = (projectedHp.get(target.id) ?? target.hp) - dmg;
           projectedHp.set(target.id, Math.max(0, remaining));
         }
       }
@@ -786,11 +1091,13 @@ export class Game {
    */
   private planOne(e: Unit, projectedHp: Map<number, number>): Intent {
     const gun = e.weapons[0];
+    const shape: WeaponShape = gun.shape ?? "single";
     const targets = this.players();
     if (targets.length === 0) {
       return {
         movePos: { ...e.pos },
         attackPos: null,
+        attackTiles: [],
         damage: gun.damage,
         knockbackPos: null,
       };
@@ -804,7 +1111,13 @@ export class Game {
       options.push(p);
     }
 
-    type Shot = { target: Unit; from: Vec; priority: number };
+    // Where peers will be: freshly-planned ones at their committed movePos,
+    // not-yet-planned ones at their current tile.
+    const peerTiles = this.enemies()
+      .filter((o) => o.id !== e.id)
+      .map((o) => (o.intent ? o.intent.movePos : o.pos));
+
+    type Shot = { target: Unit; from: Vec; tiles: Vec[]; priority: number };
     const shots: Shot[] = [];
     for (const target of targets) {
       const proj = projectedHp.get(target.id) ?? target.hp;
@@ -812,8 +1125,15 @@ export class Game {
       for (const from of options) {
         if (manhattan(from, target.pos) > gun.range) continue;
         if (!this.hasLineOfFire(from, target.pos)) continue;
-        const priority = proj * 100 + manhattan(from, e.pos);
-        shots.push({ target, from, priority });
+        const tiles = aoeTiles(from, target.pos, shape);
+        let priority = proj * 100 + manhattan(from, e.pos);
+        // Prefer spreads that clip a second player; avoid clipping allies.
+        for (const t of tiles) {
+          if (eq(t, target.pos)) continue;
+          if (targets.some((p) => eq(p.pos, t))) priority -= 50;
+          if (peerTiles.some((p) => eq(p, t))) priority += 100000;
+        }
+        shots.push({ target, from, tiles, priority });
       }
     }
 
@@ -826,6 +1146,7 @@ export class Game {
       return {
         movePos: best.from,
         attackPos: { x: best.target.pos.x, y: best.target.pos.y },
+        attackTiles: best.tiles,
         damage: gun.damage,
         knockbackPos,
       };
@@ -857,6 +1178,7 @@ export class Game {
     return {
       movePos: options[0] ?? { ...e.pos },
       attackPos: null,
+      attackTiles: [],
       damage: gun.damage,
       knockbackPos: null,
     };
