@@ -103,6 +103,52 @@ canvas {
   margin-top: -8px;
 }
 
+/* --- Field manual --- */
+#manual { z-index: 10; }
+.manual {
+  width: 470px;
+  max-height: 94%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px 18px;
+}
+.man-sec p {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.man-sec b { color: #fff; }
+.man-h {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--amber);
+  margin-bottom: 3px;
+}
+
+/* --- One-time tips --- */
+.tip {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.07);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  border-radius: 6px;
+  padding: 7px 12px;
+  animation: tip-in 0.3s ease-out;
+}
+.tip.hidden { display: none; }
+.tip b { color: #fff; }
+@keyframes tip-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 /* --- Salvage Bay --- */
 .bay {
   width: 440px;

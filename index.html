@@ -18,8 +18,11 @@
           autocomplete="off"
           placeholder="ENTER CODE"
         />
+        <button id="btn-manual" class="mute-btn" title="Field manual">?</button>
         <button id="btn-mute" class="mute-btn" title="Toggle music">&#9835;</button>
       </header>
+
+      <div id="tip" class="tip hidden"></div>
 
       <div id="turn-banner" class="banner player">YOUR TURN</div>
 
@@ -32,6 +35,7 @@
           <div class="deploy-note">Click a slot to cycle its mech.</div>
           <button id="deploy-go" class="btn primary">DEPLOY LANCE</button>
           <button id="deploy-resume" class="btn hidden">RESUME PREVIOUS RUN</button>
+          <button id="deploy-manual" class="btn ghost">FIELD MANUAL</button>
         </div>
 
         <div id="overlay" class="overlay hidden">
@@ -50,6 +54,84 @@
             &#9888; Enemy reinforcements expected &mdash; watch for drop zones
           </div>
           <button id="intro-go" class="btn primary">LAUNCH</button>
+        </div>
+
+        <div id="manual" class="overlay hidden">
+          <div class="manual">
+            <div class="bay-title">FIELD MANUAL</div>
+
+            <div class="man-sec">
+              <div class="man-h">THE RUN</div>
+              <p>A run is <b>3 missions</b> with one lance. Damage carries between
+              missions &mdash; patch up in the Salvage Bay. Clear all three to win.
+              If the lance is wiped (or a beacon falls), the run ends.</p>
+            </div>
+
+            <div class="man-sec">
+              <div class="man-h">YOUR TURN</div>
+              <p>Each mech may <b>move once and fire once</b>, in either order.
+              Hostiles commit their plans before you act &mdash; everything they
+              will do is already on the board. <b>Undo Turn (Z)</b> rewinds your
+              whole turn, free.</p>
+            </div>
+
+            <div class="man-sec">
+              <div class="man-h">READING THE FIELD</div>
+              <p><b>Dashed line + chevron</b> &mdash; where a hostile will move.<br/>
+              <b>Red tile + crosshair + number</b> &mdash; what it will shoot, for how much.<br/>
+              <b>Corner-ticked tiles</b> &mdash; splash. The blast covers these too.<br/>
+              <b>Yellow arrow</b> &mdash; a hit will shove you to that tile.<br/>
+              <b>Red diamond + count</b> &mdash; reinforcements land there in N turns.
+              Stand on it to jam the drop (1 dmg per turn).<br/>
+              <b>Amber markers</b> &mdash; mission objective.</p>
+            </div>
+
+            <div class="man-sec">
+              <div class="man-h">HEAT</div>
+              <p>Firing builds heat. At the cap you get a <b>THERMAL WARNING</b>
+              &mdash; fire past it and the overflow comes out of your hull. Mechs
+              vent 3 heat per turn. Water dunks heat to zero; fire slams it to max.</p>
+            </div>
+
+            <div class="man-sec">
+              <div class="man-h">TERRAIN</div>
+              <p><b>Wreckage</b> blocks movement and line of fire.<br/>
+              <b>Cover</b> soaks 1 damage from any hit.<br/>
+              <b>Fire</b> (and green <b>hellfire</b>): 1 dmg entering, staying, or starting there &mdash; and heat to max.<br/>
+              <b>Pit</b>: entering ends your move; skip a full turn; can't fire from
+              inside; only adjacent attackers can hit you.<br/>
+              <b>Water</b>: stops your move and next turn you can fire but not move.
+              Resets heat to zero.</p>
+            </div>
+
+            <div class="man-sec">
+              <div class="man-h">OBJECTIVES</div>
+              <p><b>Sweep</b> &mdash; destroy every hostile.<br/>
+              <b>Cache grab</b> &mdash; step on the cache to haul it. The carrier is
+              slowed, can't fire, and every hostile hunts it. Reach the green
+              EXFIL zone. If the carrier dies, the cache drops &mdash; re-grab it.<br/>
+              <b>Dust-off</b> &mdash; protect the Lift Beacon until the timer runs out.
+              It can't dodge, and hostiles you don't stop will shell it. It is
+              immune to fire, not to guns.</p>
+            </div>
+
+            <div class="man-sec">
+              <div class="man-h">SALVAGE BAY</div>
+              <p>Win missions to earn <b>Salvage</b> (+2 base, +1 per surviving mech).
+              Kills have a 50% chance to drop a <b>Core</b>.
+              <b>Repair</b> 1S &rarr; +2 HP &middot; <b>Recover</b> 5S+1C &rarr; revive a wreck
+              &middot; <b>Reinforce</b> 4S &rarr; +2 max HP &middot; <b>Rearm</b> 3S+3C &rarr; swap a weapon.</p>
+            </div>
+
+            <div class="man-sec">
+              <div class="man-h">CONTROLS</div>
+              <p>Click or <b>Tab</b> to select a mech &middot; <b>1 / 2</b> to pick a weapon
+              &middot; click a hostile to fire &middot; <b>Z</b> to undo the turn &middot;
+              <b>&#9835;</b> to mute.</p>
+            </div>
+
+            <button id="manual-close" class="btn primary">CLOSE</button>
+          </div>
         </div>
 
         <div id="salvage" class="overlay hidden">

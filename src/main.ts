@@ -82,6 +82,11 @@ const cheatV = document.getElementById("cheat-v") as HTMLSpanElement;
 const cheatInput = document.getElementById("cheat-input") as HTMLInputElement;
 const btnUndo = document.getElementById("btn-undo") as HTMLButtonElement;
 const deployResume = document.getElementById("deploy-resume") as HTMLButtonElement;
+const btnManual = document.getElementById("btn-manual") as HTMLButtonElement;
+const manualEl = document.getElementById("manual") as HTMLDivElement;
+const manualClose = document.getElementById("manual-close") as HTMLButtonElement;
+const deployManual = document.getElementById("deploy-manual") as HTMLButtonElement;
+const tipEl = document.getElementById("tip") as HTMLDivElement;
 
 // --- HiDPI ---
 const dpr = window.devicePixelRatio || 1;
@@ -778,6 +783,97 @@ deployResume.addEventListener("click", () => {
   refreshUI();
 });
 
+// --- Field manual ---
+let manualOpen = false;
+
+function setManual(open: boolean): void {
+  manualOpen = open;
+  manualEl.classList.toggle("hidden", !open);
+  refreshUI();
+}
+btnManual.addEventListener("click", () => setManual(!manualOpen));
+deployManual.addEventListener("click", () => setManual(true));
+manualClose.addEventListener("click", () => setManual(false));
+
+// --- One-time tips: fire the first time a mechanic shows up ---
+const TIPS_KEY = "sr-tips-v1";
+const TIP_SECONDS = 11;
+
+function loadSeenTips(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(TIPS_KEY) ?? "[]") as string[]);
+  } catch {
+    return new Set();
+  }
+}
+const seenTips = loadSeenTips();
+
+interface Tip {
+  id: string;
+  when: () => boolean;
+  html: string;
+}
+
+const TIPS: Tip[] = [
+  {
+    id: "welcome",
+    when: () => game.phase === "player" && game.mission === 1 && game.turn <= 2,
+    html: "<b>TIP</b> — Hostiles have already committed their moves: chevrons show where they'll go, crosshairs what they'll hit. Move and fire each mech, then End Turn. Full rules under <b>?</b>",
+  },
+  {
+    id: "spread",
+    when: () =>
+      game
+        .enemies()
+        .some((e) => (e.intent?.attackTiles.length ?? 0) > 1),
+    html: "<b>TIP</b> — Corner-ticked tiles are splash: dodging the crosshair isn't enough. Splash hits <b>anything</b> — you can bait it into another hostile.",
+  },
+  {
+    id: "heat",
+    when: () =>
+      game.players().some((u) => u.heat > 0 && u.heat >= u.maxHeat - 2),
+    html: "<b>TIP</b> — Heat past a mech's cap comes out of its hull. Venting is 3 per turn; water dunks it to zero; fire slams it to max.",
+  },
+  {
+    id: "dropzone",
+    when: () => game.pendingSpawns.length > 0,
+    html: "<b>TIP</b> — Red diamonds are inbound reinforcements. Stand on one to jam the drop — you take 1 dmg per turn, nothing lands.",
+  },
+  {
+    id: "carrier",
+    when: () => game.objective.carrierId !== null,
+    html: "<b>TIP</b> — The carrier is slowed, can't fire, and every hostile is hunting it. Screen it with the rest of the lance.",
+  },
+  {
+    id: "beacon",
+    when: () => game.structures.length > 0 && game.phase === "player",
+    html: "<b>TIP</b> — The beacon can't dodge, and anything you don't kill or block will shoot it. Hold ground nearby — its guns can't be outrun.",
+  },
+  {
+    id: "undo",
+    when: () => game.turnDirty,
+    html: "<b>TIP</b> — Misclicked? <b>Undo Turn (Z)</b> rewinds your whole turn. It's free — hostiles never react to it.",
+  },
+];
+
+let activeTip: { id: string; expires: number } | null = null;
+
+function checkTips(): void {
+  if (activeTip) return;
+  if (game.phase !== "player" && game.phase !== "salvage") return;
+  const tip = TIPS.find((t) => !seenTips.has(t.id) && t.when());
+  if (!tip) return;
+  seenTips.add(tip.id);
+  try {
+    localStorage.setItem(TIPS_KEY, JSON.stringify([...seenTips]));
+  } catch {
+    /* ignore */
+  }
+  activeTip = { id: tip.id, expires: time + TIP_SECONDS };
+  tipEl.innerHTML = tip.html;
+  tipEl.classList.remove("hidden");
+}
+
 // --- Turn undo ---
 function doUndoTurn(): void {
   if (busy || game.phase !== "player" || !game.turnDirty) return;
@@ -1175,8 +1271,10 @@ function refreshUI(): void {
   }
 
   hint.textContent = hintText();
-  btnEnd.disabled = busy || game.phase !== "player";
-  btnUndo.disabled = busy || game.phase !== "player" || !game.turnDirty;
+  btnEnd.disabled = busy || manualOpen || game.phase !== "player";
+  btnUndo.disabled =
+    busy || manualOpen || game.phase !== "player" || !game.turnDirty;
+  checkTips();
 }
 
 // --- Rendering ---
@@ -2009,6 +2107,11 @@ function update(dt: number): void {
     dying[i].life -= dt;
     if (dying[i].life <= 0) dying.splice(i, 1);
   }
+  if (activeTip && time > activeTip.expires) {
+    activeTip = null;
+    tipEl.classList.add("hidden");
+    checkTips(); // surface the next queued tip, if any is triggered
+  }
   shake = Math.max(0, shake - dt * 28);
 }
 
@@ -2097,6 +2200,11 @@ cheatInput.addEventListener("keydown", (e) => {
 
 window.addEventListener("keydown", (e) => {
   if (document.activeElement === cheatInput) return;
+  if (e.key === "Escape" && manualOpen) {
+    setManual(false);
+    return;
+  }
+  if (manualOpen) return;
   if (busy || game.phase !== "player") return;
   const sel = game.selected;
   if ((e.key === "1" || e.key === "2") && sel) {
