@@ -518,6 +518,7 @@ canvas {
 .sw.wreckage { background: #2b3340; }
 .sw.cover { background: #3c4a5c; }
 .sw.fire { background: #ea580c; }
+.sw.greenfire { background: #16a34a; }
 .sw.pit { background: #0c0f15; border: 1px solid #1b2330; }
 .sw.water { background: #2563a0; }
 

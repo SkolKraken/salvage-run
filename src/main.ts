@@ -18,6 +18,7 @@ import {
   REARM_SALVAGE,
   REARM_CORES,
   eq,
+  isFire,
   manhattan,
   type ArchetypeId,
   type EnemyKind,
@@ -118,7 +119,7 @@ interface RState {
 const rstate = new Map<number, RState>();
 
 interface Projectile {
-  kind: "beam" | "tracer" | "slash";
+  kind: "beam" | "tracer" | "slash" | "missile";
   from: Vec;
   to: Vec;
   color: string;
@@ -128,6 +129,35 @@ interface Projectile {
   done: boolean;
 }
 const projectiles: Projectile[] = [];
+const MISSILE_TIME = 0.9;
+
+/** Green fire tiles whose hellfire missile hasn't visually landed yet. */
+const hiddenFire = new Set<number>();
+
+/**
+ * Ballistic missile position: launches straight up off the shooter, crosses
+ * out of view, then drops down onto the target tile. Returns null while the
+ * missile is unlaunched (stagger delay) or up in the sky between phases.
+ */
+function missilePos(p: Projectile): { x: number; y: number; down: boolean } | null {
+  const T = 1 - p.life / p.maxLife;
+  if (T <= 0 || T >= 1) return null;
+  const fx = p.from.x * TILE + TILE / 2;
+  const fy = p.from.y * TILE + TILE / 2;
+  const tx = p.to.x * TILE + TILE / 2;
+  const ty = p.to.y * TILE + TILE / 2;
+  const UP_END = 0.38;
+  const DOWN_START = 0.55;
+  if (T < UP_END) {
+    const k = T / UP_END;
+    return { x: fx, y: fy - 14 - k * k * (fy + 70), down: false };
+  }
+  if (T >= DOWN_START) {
+    const k = (T - DOWN_START) / (1 - DOWN_START);
+    return { x: tx, y: -60 + k * k * (ty + 60), down: true };
+  }
+  return null;
+}
 
 interface Particle {
   x: number;
@@ -233,7 +263,7 @@ function spawnExplosion(pos: Vec): void {
 }
 
 /** Small impact puff on a threatened tile (lighter than a death explosion). */
-function spawnImpact(pos: Vec): void {
+function spawnImpact(pos: Vec, colors: [string, string] = ["#fca5a5", "#f97316"]): void {
   const cx = pos.x * TILE + TILE / 2;
   const cy = pos.y * TILE + TILE / 2;
   for (let i = 0; i < 5; i++) {
@@ -244,7 +274,7 @@ function spawnImpact(pos: Vec): void {
       y: cy,
       vx: Math.cos(ang) * speed,
       vy: Math.sin(ang) * speed - 15,
-      color: i % 2 === 0 ? "#fca5a5" : "#f97316",
+      color: i % 2 === 0 ? colors[0] : colors[1],
       life: 0.25 + Math.random() * 0.15,
       maxLife: 0.4,
       size: 1.5 + Math.random() * 1.5,
@@ -366,6 +396,7 @@ function doDeploy(): void {
   rstate.clear();
   floaters.length = 0;
   projectiles.length = 0;
+  hiddenFire.clear();
   particles.length = 0;
   dying.length = 0;
   shake = 0;
@@ -437,6 +468,7 @@ function handleClick(t: Vec): void {
 
 function projectileKindFor(w: { name: string; range: number }): Projectile["kind"] {
   if (w.range === 1) return "slash";
+  if (/hellfire|missile/i.test(w.name)) return "missile";
   if (/laser|plasma|beam|railgun/i.test(w.name)) return "beam";
   return "tracer";
 }
@@ -548,8 +580,54 @@ function endTurnFlow(): void {
         const tiles = res.tiles;
         const hits = res.hits;
         for (const h of hits) if (h.killed) noteDying(h.id);
+        const pk = projectileKindFor(e.weapons[0]);
+        if (pk === "missile") {
+          // Hide fresh green fire until each missile visually lands.
+          for (const g of res.groundFire) hiddenFire.add(g.y * GRID + g.x);
+          const finish = (): void => {
+            refreshUI();
+            if (game.phase === "runFailed") {
+              window.setTimeout(settleBattle, 500);
+            } else {
+              window.setTimeout(step, 220);
+            }
+          };
+          tiles.forEach((tile, i) => {
+            const isLast = i === tiles.length - 1;
+            projectiles.push({
+              kind: "missile",
+              from: { ...e.pos },
+              to: { ...tile },
+              color: "#4ade80",
+              life: MISSILE_TIME + i * 0.13,
+              maxLife: MISSILE_TIME,
+              done: false,
+              onLand: () => {
+                hiddenFire.delete(tile.y * GRID + tile.x);
+                spawnImpact(tile, ["#86efac", "#22c55e"]);
+                shake += 1.5;
+                const h = hits.find((hh) => eq(hh.pos, tile));
+                if (h) {
+                  spawnFloater(
+                    h.pos,
+                    h.damage > 0 ? `-${h.damage}` : "BLOCKED",
+                    h.damage > 0 ? "#fca5a5" : "#94a3b8",
+                  );
+                  flashUnit(h.id);
+                  shake += Math.max(2, h.damage * 1.5);
+                  if (h.killed) spawnExplosion(h.pos);
+                }
+                if (isLast) {
+                  if (hits.length === 0) spawnFloater(aim, "MISS", "#94a3b8");
+                  finish();
+                }
+              },
+            });
+          });
+          return;
+        }
         projectiles.push({
-          kind: projectileKindFor(e.weapons[0]),
+          kind: pk,
           from: { ...e.pos },
           to: aim,
           color: palFor(e).body,
@@ -596,6 +674,7 @@ function endTurnFlow(): void {
 }
 
 function finishEnemyPhase(): void {
+  hiddenFire.clear(); // every missile has landed by phase end
   const before = new Map(game.players().map((u) => [u.id, u.heat]));
   game.endEnemyPhase();
   syncRenderState();
@@ -655,6 +734,7 @@ function restart(): void {
   game.openDeploy();
   floaters.length = 0;
   projectiles.length = 0;
+  hiddenFire.clear();
   particles.length = 0;
   dying.length = 0;
   shake = 0;
@@ -860,7 +940,7 @@ function hintText(): string {
           : `${u.name} is in a pit — it can't fire. Move it out to attack.`;
       if (u.impaired === "move")
         return `${u.name} is mired in water — it can fire but not move.`;
-      if (game.terrainAt(u.pos) === "fire")
+      if (isFire(game.terrainAt(u.pos)))
         return `${u.name} is in fire — move clear or it keeps burning.`;
       if (game.objective.carrierId === u.id)
         return `${u.name} is hauling the cache — slowed, can't fire. Reach the green EXFIL zone.`;
@@ -1075,23 +1155,33 @@ function drawCover(px: number, py: number): void {
   ctx.fill();
 }
 
-function drawFire(px: number, py: number, gx: number, gy: number): void {
+function drawFire(
+  px: number,
+  py: number,
+  gx: number,
+  gy: number,
+  green: boolean,
+): void {
   const seed = gx * 1.3 + gy * 0.7;
   const pulse = 0.5 + 0.5 * Math.sin(time * 6 + seed);
-  ctx.fillStyle = `rgba(234,88,12,${0.14 + 0.12 * pulse})`;
+  // hellfire burns green; ordinary fire burns orange
+  const glow = green ? "22,163,74" : "234,88,12";
+  const outer = green ? "34,197,94" : "249,115,22";
+  const inner = green ? "187,247,208" : "250,204,21";
+  ctx.fillStyle = `rgba(${glow},${0.14 + 0.12 * pulse})`;
   ctx.fillRect(px, py, TILE, TILE);
   const base = py + TILE - 11;
   for (let i = 0; i < 3; i++) {
     const fx = px + 16 + i * 16;
     const h = 17 + 9 * Math.sin(time * 7 + i * 2.1 + seed);
-    ctx.fillStyle = `rgba(249,115,22,${0.55 + 0.3 * pulse})`;
+    ctx.fillStyle = `rgba(${outer},${0.55 + 0.3 * pulse})`;
     ctx.beginPath();
     ctx.moveTo(fx - 8, base);
     ctx.lineTo(fx, base - h);
     ctx.lineTo(fx + 8, base);
     ctx.closePath();
     ctx.fill();
-    ctx.fillStyle = `rgba(250,204,21,${0.5 + 0.3 * pulse})`;
+    ctx.fillStyle = `rgba(${inner},${0.5 + 0.3 * pulse})`;
     ctx.beginPath();
     ctx.moveTo(fx - 4, base);
     ctx.lineTo(fx, base - h * 0.55);
@@ -1160,11 +1250,13 @@ function drawTerrain(): void {
     for (let x = 0; x < GRID; x++) {
       const kind = game.terrainAt({ x, y });
       if (kind === "open") continue;
+      if (hiddenFire.has(y * GRID + x)) continue; // missile still inbound
       const px = x * TILE;
       const py = y * TILE;
       if (kind === "wreckage") drawWreckage(px, py);
       else if (kind === "cover") drawCover(px, py);
-      else if (kind === "fire") drawFire(px, py, x, y);
+      else if (kind === "fire") drawFire(px, py, x, y, false);
+      else if (kind === "greenfire") drawFire(px, py, x, y, true);
       else if (kind === "pit") drawPit(px, py);
       else if (kind === "water") drawWater(px, py, x, y);
     }
@@ -1192,6 +1284,9 @@ function drawMoveTiles(): void {
     if (kind === "fire" || kind === "pit") {
       fill = "rgba(234,88,12,0.22)";
       line = "rgba(249,115,22,0.6)";
+    } else if (kind === "greenfire") {
+      fill = "rgba(22,163,74,0.22)";
+      line = "rgba(74,222,128,0.6)";
     } else if (kind === "water") {
       fill = "rgba(56,140,200,0.22)";
       line = "rgba(96,170,220,0.55)";
@@ -1657,6 +1752,37 @@ function drawProjectiles(): void {
       ctx.beginPath();
       ctx.arc(headX, headY, 2.6, 0, Math.PI * 2);
       ctx.fill();
+    } else if (p.kind === "missile") {
+      const m = missilePos(p);
+      if (!m) continue;
+      ctx.save();
+      ctx.translate(m.x, m.y);
+      if (m.down) ctx.scale(1, -1);
+      // body
+      ctx.fillStyle = "#cbd5e1";
+      ctx.fillRect(-2.5, -6, 5, 11);
+      // green warhead
+      ctx.fillStyle = "#4ade80";
+      ctx.beginPath();
+      ctx.moveTo(-2.5, -6);
+      ctx.lineTo(0, -12);
+      ctx.lineTo(2.5, -6);
+      ctx.closePath();
+      ctx.fill();
+      // fins
+      ctx.fillStyle = "#64748b";
+      ctx.fillRect(-4.5, 2, 2, 4);
+      ctx.fillRect(2.5, 2, 2, 4);
+      // exhaust flicker
+      const f = 4 + Math.random() * 5;
+      ctx.fillStyle = "#fbbf24";
+      ctx.beginPath();
+      ctx.moveTo(-2, 5);
+      ctx.lineTo(0, 5 + f);
+      ctx.lineTo(2, 5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
     } else {
       // slash — flash at the target tile during projectile life
       const a = 1 - Math.abs(t - 0.5) * 2;
@@ -1764,6 +1890,21 @@ function update(dt: number): void {
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
     p.life -= dt;
+    if (p.kind === "missile") {
+      const m = missilePos(p);
+      if (m) {
+        particles.push({
+          x: m.x + (Math.random() - 0.5) * 3,
+          y: m.y + (m.down ? -8 : 8),
+          vx: (Math.random() - 0.5) * 12,
+          vy: m.down ? -20 : 20,
+          color: Math.random() < 0.3 ? "#86efac" : "#6b7280",
+          life: 0.25 + Math.random() * 0.15,
+          maxLife: 0.4,
+          size: 1.5 + Math.random() * 1.5,
+        });
+      }
+    }
     if (p.life <= 0 && !p.done) {
       p.done = true;
       p.onLand();
@@ -1898,6 +2039,7 @@ bayDeploy.addEventListener("click", () => {
   rstate.clear();
   floaters.length = 0;
   projectiles.length = 0;
+  hiddenFire.clear();
   particles.length = 0;
   dying.length = 0;
   shake = 0;

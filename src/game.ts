@@ -28,8 +28,14 @@ export type TerrainKind =
   | "wreckage"
   | "cover"
   | "fire"
+  | "greenfire"
   | "pit"
   | "water";
+
+/** Hellfire's green flame burns exactly like regular fire. */
+export function isFire(t: TerrainKind): boolean {
+  return t === "fire" || t === "greenfire";
+}
 export type Impair = "none" | "full" | "move";
 
 export interface Vec {
@@ -55,6 +61,8 @@ export interface Weapon {
   shape?: WeaponShape;
   /** Lobbed shot: ignores wreckage when tracing line of fire. */
   arcing?: boolean;
+  /** Terrain left behind on open blast tiles after impact. */
+  groundFire?: TerrainKind;
 }
 
 export interface Archetype {
@@ -163,12 +171,13 @@ export const ENEMY_ARCHETYPES: Record<EnemyKind, EnemyArchetype> = {
     moveRange: 2,
     heatCap: 6,
     weapon: {
-      name: "Arc Mortar",
+      name: "Hellfire Missiles",
       damage: 1,
       range: 6,
       heat: 0,
       shape: "cross",
       arcing: true,
+      groundFire: "greenfire",
     },
   },
 };
@@ -866,7 +875,7 @@ export class Game {
           if (this.livingAt(n)) continue;
           if (this.structureAt(n)) continue;
           const nk = n.y * GRID + n.x;
-          const nFires = pInfo.fires + (t === "fire" ? 1 : 0);
+          const nFires = pInfo.fires + (isFire(t) ? 1 : 0);
           const existing = map.get(nk);
           if (existing) {
             if (existing.steps === step && nFires < existing.fires) {
@@ -922,7 +931,7 @@ export class Game {
 
     const fireCrossed: Vec[] = [];
     for (let i = 0; i < path.length - 1; i++) {
-      if (this.terrainAt(path[i]) === "fire") {
+      if (isFire(this.terrainAt(path[i]))) {
         u.heat = u.maxHeat;
         this.applyDamage(u, FIRE_DAMAGE);
         fireCrossed.push(path[i]);
@@ -997,7 +1006,7 @@ export class Game {
   endTurnHazards(): HazardHit[] {
     const hits: HazardHit[] = [];
     for (const u of this.units) {
-      if (u.hp <= 0 || this.terrainAt(u.pos) !== "fire") continue;
+      if (u.hp <= 0 || !isFire(this.terrainAt(u.pos))) continue;
       u.heat = u.maxHeat;
       this.applyDamage(u, FIRE_DAMAGE);
       hits.push({ id: u.id, pos: { ...u.pos }, damage: FIRE_DAMAGE });
@@ -1034,6 +1043,7 @@ export class Game {
       killed: boolean;
       knockTo: Vec | null;
     }[];
+    groundFire: Vec[];
   } | null {
     if (!e.intent || !e.intent.attackPos || e.hp <= 0) return null;
     const aim = e.intent.attackPos;
@@ -1079,7 +1089,7 @@ export class Game {
           victim.pos = { x: kp.x, y: kp.y };
           knockTo = { x: kp.x, y: kp.y };
           const t = this.terrainAt(kp);
-          if (t === "fire") {
+          if (isFire(t)) {
             victim.heat = victim.maxHeat;
             this.applyDamage(victim, FIRE_DAMAGE);
           } else if (t === "pit") {
@@ -1101,8 +1111,26 @@ export class Game {
       });
     }
 
+    // Incendiary payloads torch the open ground they land on.
+    const groundFire: Vec[] = [];
+    const gf = e.weapons[0]?.groundFire;
+    if (gf) {
+      for (const pos of tiles) {
+        if (this.terrainAt(pos) !== "open") continue;
+        const row = this.terrain[pos.y];
+        if (!row) continue;
+        row[pos.x] = gf;
+        groundFire.push({ ...pos });
+      }
+    }
+
     if (hits.length > 0) this.checkEnd();
-    return { aim: { ...aim }, tiles: tiles.map((t) => ({ ...t })), hits };
+    return {
+      aim: { ...aim },
+      tiles: tiles.map((t) => ({ ...t })),
+      hits,
+      groundFire,
+    };
   }
 
   endEnemyPhase(): void {
@@ -1208,7 +1236,7 @@ export class Game {
       const t = this.terrainAt(u.pos);
       if (t === "water") {
         u.heat = 0;
-      } else if (t === "fire") {
+      } else if (isFire(t)) {
         u.heat = u.maxHeat;
         this.applyDamage(u, FIRE_DAMAGE);
         this.recentHazardHits.push({
@@ -1302,7 +1330,7 @@ export class Game {
     for (const k of this.moveMap(e).keys()) {
       const p = { x: k % GRID, y: Math.floor(k / GRID) };
       const t = this.terrainAt(p);
-      if (t === "fire" || t === "pit" || t === "water") continue;
+      if (isFire(t) || t === "pit" || t === "water") continue;
       options.push(p);
     }
 
