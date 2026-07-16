@@ -546,6 +546,7 @@ canvas {
 }
 .btn:hover:not(:disabled) { background: #2a333f; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn.hidden { display: none; }
 .btn.ghost { flex: 0 0 110px; color: var(--muted); }
 .btn.primary {
   flex: 0 0 auto;

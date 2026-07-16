@@ -80,6 +80,8 @@ const introGo = document.getElementById("intro-go") as HTMLButtonElement;
 const btnMute = document.getElementById("btn-mute") as HTMLButtonElement;
 const cheatV = document.getElementById("cheat-v") as HTMLSpanElement;
 const cheatInput = document.getElementById("cheat-input") as HTMLInputElement;
+const btnUndo = document.getElementById("btn-undo") as HTMLButtonElement;
+const deployResume = document.getElementById("deploy-resume") as HTMLButtonElement;
 
 // --- HiDPI ---
 const dpr = window.devicePixelRatio || 1;
@@ -402,6 +404,7 @@ function doDeploy(): void {
   shake = 0;
   syncRenderState();
   deployEl.classList.add("hidden");
+  saveRun();
   showMissionIntro();
 }
 
@@ -713,18 +716,94 @@ function finishEnemyPhase(): void {
   refreshUI();
   if (settleBattle()) return;
   busy = false;
+  saveRun(); // stable point: start of a fresh player turn
   refreshUI();
 }
+
+// --- Run persistence ---
+const SAVE_KEY = "sr-run-v1";
+
+function saveRun(): void {
+  try {
+    localStorage.setItem(SAVE_KEY, game.serialize());
+  } catch {
+    /* storage unavailable — play on without saves */
+  }
+}
+
+function clearSave(): void {
+  try {
+    localStorage.removeItem(SAVE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function updateResumeButton(): void {
+  let has = false;
+  try {
+    has = !!localStorage.getItem(SAVE_KEY);
+  } catch {
+    /* ignore */
+  }
+  deployResume.classList.toggle("hidden", !has);
+}
+
+deployResume.addEventListener("click", () => {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(SAVE_KEY);
+  } catch {
+    /* ignore */
+  }
+  if (!raw || !game.load(raw)) {
+    clearSave();
+    updateResumeButton();
+    return;
+  }
+  rstate.clear();
+  floaters.length = 0;
+  projectiles.length = 0;
+  hiddenFire.clear();
+  particles.length = 0;
+  dying.length = 0;
+  shake = 0;
+  syncRenderState();
+  deployEl.classList.add("hidden");
+  busy = false;
+  if (game.phase === "salvage") {
+    busy = true;
+    openSalvageBay();
+  }
+  refreshUI();
+});
+
+// --- Turn undo ---
+function doUndoTurn(): void {
+  if (busy || game.phase !== "player" || !game.turnDirty) return;
+  if (!game.undoTurn()) return;
+  floaters.length = 0;
+  projectiles.length = 0;
+  hiddenFire.clear();
+  particles.length = 0;
+  dying.length = 0;
+  rstate.clear();
+  syncRenderState();
+  refreshUI();
+}
+btnUndo.addEventListener("click", doUndoTurn);
 
 function settleBattle(): boolean {
   if (game.phase === "salvage") {
     busy = true;
     openSalvageBay();
+    saveRun();
     refreshUI();
     return true;
   }
   if (game.phase === "runComplete" || game.phase === "runFailed") {
     busy = true;
+    clearSave();
     showEndOverlay();
     refreshUI();
     return true;
@@ -744,11 +823,13 @@ function restart(): void {
   rearmCtx = null;
   pendingBayFlash = null;
   busy = false;
+  clearSave();
   overlay.classList.add("hidden");
   salvageEl.classList.add("hidden");
   introEl.classList.add("hidden");
   deployEl.classList.remove("hidden");
   renderDeploySlots();
+  updateResumeButton();
   refreshUI();
 }
 
@@ -879,6 +960,7 @@ function renderRearmPanel(): void {
 }
 
 function renderSalvageBay(): void {
+  if (game.phase === "salvage") saveRun(); // persist bay purchases
   baySalvage.textContent = String(game.salvage);
   bayCores.textContent = String(game.cores);
   baySub.textContent =
@@ -1094,6 +1176,7 @@ function refreshUI(): void {
 
   hint.textContent = hintText();
   btnEnd.disabled = busy || game.phase !== "player";
+  btnUndo.disabled = busy || game.phase !== "player" || !game.turnDirty;
 }
 
 // --- Rendering ---
@@ -2029,6 +2112,8 @@ window.addEventListener("keydown", (e) => {
       game.selectUnit(ps[(idx + 1) % ps.length].id);
       refreshUI();
     }
+  } else if (e.key === "z" || e.key === "Z") {
+    doUndoTurn();
   }
 });
 deployGo.addEventListener("click", doDeploy);
@@ -2047,6 +2132,7 @@ bayDeploy.addEventListener("click", () => {
   shake = 0;
   syncRenderState();
   salvageEl.classList.add("hidden");
+  saveRun();
   showMissionIntro();
 });
 
@@ -2059,5 +2145,6 @@ btnMute.addEventListener("click", () => {
 });
 
 renderDeploySlots();
+updateResumeButton();
 refreshUI();
 requestAnimationFrame(frame);

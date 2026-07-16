@@ -425,6 +425,39 @@ interface MoveNode {
   fires: number;
 }
 
+const SAVE_VERSION = 1;
+
+/**
+ * Everything mutable about a run, as plain data. Player units live in
+ * `lance` (including dead ones); `unitOrder` rebuilds the units array from
+ * lance members and `foes` so object identity survives a round-trip.
+ */
+interface GameState {
+  lance: Unit[];
+  foes: Unit[];
+  unitOrder: number[];
+  terrain: TerrainKind[][];
+  phase: Phase;
+  selectedId: number | null;
+  recentHazardHits: HazardHit[];
+  wreckMarks: Vec[];
+  turn: number;
+  pendingSpawns: PendingSpawn[];
+  recentSpawns: Vec[];
+  recentSpawnBlocks: HazardHit[];
+  objective: ObjectiveState;
+  objectiveComplete: boolean;
+  criticalLoss: boolean;
+  failReason: string | null;
+  structures: Structure[];
+  exfilTiles: Vec[];
+  mission: number;
+  salvage: number;
+  cores: number;
+  lastSalvageEarned: number;
+  nextId: number;
+}
+
 export class Game {
   units: Unit[] = [];
   /** The player's 3 mechs — persist across the whole run (HP and upgrades carry). */
@@ -467,6 +500,10 @@ export class Game {
   cores = 0;
   /** Salvage awarded for the most recently cleared mission. */
   lastSalvageEarned = 0;
+  /** True once the player has moved or fired this turn (enables undo). */
+  turnDirty = false;
+  /** State as of the start of the current player turn (undo target). */
+  private turnStart: GameState | null = null;
   private nextId = 1;
 
   /** Start a new run: build the lance and deploy into mission 1. */
@@ -928,6 +965,7 @@ export class Game {
 
     u.pos = { x: dest.x, y: dest.y };
     u.hasMoved = true;
+    this.turnDirty = true;
 
     const fireCrossed: Vec[] = [];
     for (let i = 0; i < path.length - 1; i++) {
@@ -994,6 +1032,7 @@ export class Game {
     if (overflow > 0) this.applyDamage(u, overflow);
 
     u.hasFired = true;
+    this.turnDirty = true;
     this.checkEnd();
     return { damage: dmg, heat: w.heat, selfDamage: overflow, coreDropped };
   }
@@ -1256,6 +1295,8 @@ export class Game {
       this.players().find((u) => !u.hasMoved || !u.hasFired) ??
       this.players()[0];
     this.selectedId = active ? active.id : null;
+    this.turnDirty = false;
+    this.turnStart = this.phase === "player" ? this.capture() : null;
   }
 
   /**
@@ -1443,6 +1484,95 @@ export class Game {
       cy = ny;
     }
     return { x: cx, y: cy };
+  }
+
+  // --- Snapshots: turn undo + run persistence ---
+
+  private capture(): GameState {
+    return structuredClone({
+      lance: this.lance,
+      foes: this.units.filter((u) => u.team !== "player"),
+      unitOrder: this.units.map((u) => u.id),
+      terrain: this.terrain,
+      phase: this.phase,
+      selectedId: this.selectedId,
+      recentHazardHits: this.recentHazardHits,
+      wreckMarks: this.wreckMarks,
+      turn: this.turn,
+      pendingSpawns: this.pendingSpawns,
+      recentSpawns: this.recentSpawns,
+      recentSpawnBlocks: this.recentSpawnBlocks,
+      objective: this.objective,
+      objectiveComplete: this.objectiveComplete,
+      criticalLoss: this.criticalLoss,
+      failReason: this.failReason,
+      structures: this.structures,
+      exfilTiles: this.exfilTiles,
+      mission: this.mission,
+      salvage: this.salvage,
+      cores: this.cores,
+      lastSalvageEarned: this.lastSalvageEarned,
+      nextId: this.nextId,
+    });
+  }
+
+  private applyState(s: GameState): void {
+    const c = structuredClone(s);
+    this.lance = c.lance;
+    const byId = new Map<number, Unit>();
+    for (const u of c.lance) byId.set(u.id, u);
+    for (const u of c.foes) byId.set(u.id, u);
+    this.units = c.unitOrder
+      .map((id) => byId.get(id))
+      .filter((u): u is Unit => !!u);
+    this.terrain = c.terrain;
+    this.phase = c.phase;
+    this.selectedId = c.selectedId;
+    this.recentHazardHits = c.recentHazardHits;
+    this.wreckMarks = c.wreckMarks;
+    this.turn = c.turn;
+    this.pendingSpawns = c.pendingSpawns;
+    this.recentSpawns = c.recentSpawns;
+    this.recentSpawnBlocks = c.recentSpawnBlocks;
+    this.objective = c.objective;
+    this.objectiveComplete = c.objectiveComplete;
+    this.criticalLoss = c.criticalLoss;
+    this.failReason = c.failReason;
+    this.structures = c.structures;
+    this.exfilTiles = c.exfilTiles;
+    this.mission = c.mission;
+    this.salvage = c.salvage;
+    this.cores = c.cores;
+    this.lastSalvageEarned = c.lastSalvageEarned;
+    this.nextId = c.nextId;
+    this.turnDirty = false;
+  }
+
+  /** Rewind to the start of the current player turn (ITB-style reset). */
+  undoTurn(): boolean {
+    if (this.phase !== "player" || !this.turnStart) return false;
+    this.applyState(this.turnStart);
+    return true;
+  }
+
+  /** Serialize the run for persistence. */
+  serialize(): string {
+    return JSON.stringify({ v: SAVE_VERSION, state: this.capture() });
+  }
+
+  /** Restore a serialized run. Returns false on any mismatch or bad data. */
+  load(json: string): boolean {
+    try {
+      const parsed = JSON.parse(json) as { v: number; state: GameState };
+      if (parsed.v !== SAVE_VERSION || !parsed.state) return false;
+      const phase = parsed.state.phase;
+      if (phase !== "player" && phase !== "salvage") return false;
+      this.applyState(parsed.state);
+      this.turnStart = phase === "player" ? structuredClone(parsed.state) : null;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Cheat: instantly complete the current mission. */
