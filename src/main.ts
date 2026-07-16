@@ -26,7 +26,7 @@ import {
   type Unit,
 } from "./game";
 import { getSprite, spriteDataURL, type SpriteKey } from "./sprites";
-import { ensureAudio, audioMuted, toggleMute } from "./audio";
+import { ensureAudio, audioMuted, toggleMute, playMissileScream } from "./audio";
 
 const TILE = 64;
 const SIZE = GRID * TILE;
@@ -129,7 +129,7 @@ interface Projectile {
   done: boolean;
 }
 const projectiles: Projectile[] = [];
-const MISSILE_TIME = 0.9;
+const MISSILE_TIME = 1.125; // ~20% slower than the original 0.9s pass
 
 /** Green fire tiles whose hellfire missile hasn't visually landed yet. */
 const hiddenFire = new Set<number>();
@@ -594,12 +594,13 @@ function endTurnFlow(): void {
           };
           tiles.forEach((tile, i) => {
             const isLast = i === tiles.length - 1;
+            window.setTimeout(playMissileScream, i * 160);
             projectiles.push({
               kind: "missile",
               from: { ...e.pos },
               to: { ...tile },
               color: "#4ade80",
-              life: MISSILE_TIME + i * 0.13,
+              life: MISSILE_TIME + i * 0.16,
               maxLife: MISSILE_TIME,
               done: false,
               onLand: () => {
@@ -608,9 +609,10 @@ function endTurnFlow(): void {
                 shake += 1.5;
                 const h = hits.find((hh) => eq(hh.pos, tile));
                 if (h) {
+                  const isStruct = game.structures.some((s) => s.id === h.id);
                   spawnFloater(
                     h.pos,
-                    h.damage > 0 ? `-${h.damage}` : "BLOCKED",
+                    h.damage > 0 ? `-${h.damage}` : isStruct ? "IMMUNE" : "BLOCKED",
                     h.damage > 0 ? "#fca5a5" : "#94a3b8",
                   );
                   flashUnit(h.id);

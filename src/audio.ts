@@ -148,6 +148,65 @@ export function ensureAudio(): void {
   scheduleThuds(ctx, master);
 }
 
+let screamNoise: AudioBuffer | null = null;
+
+/**
+ * Screaming-missile launch SFX (saturn-battery firework whistle): a falling
+ * sawtooth with fast vibrato through a sweeping bandpass, plus an airy noise
+ * layer. Randomized per shot so a staggered volley shrieks like a battery.
+ */
+export function playMissileScream(): void {
+  if (!ctx || !master) return;
+  const ac = ctx;
+  const now = ac.currentTime;
+  const dur = 0.75 + Math.random() * 0.25;
+  const f0 = 1300 + Math.random() * 600;
+  const fEnd = 300 + Math.random() * 140;
+
+  const bp = ac.createBiquadFilter();
+  bp.type = "bandpass";
+  bp.frequency.setValueAtTime(f0, now);
+  bp.frequency.exponentialRampToValueAtTime(fEnd, now + dur);
+  bp.Q.value = 2.2;
+
+  const gain = ac.createGain();
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.085, now + 0.06);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  bp.connect(gain);
+  gain.connect(master);
+
+  const osc = ac.createOscillator();
+  osc.type = "sawtooth";
+  osc.frequency.setValueAtTime(f0, now);
+  osc.frequency.exponentialRampToValueAtTime(fEnd, now + dur);
+  const vib = ac.createOscillator();
+  vib.type = "sine";
+  vib.frequency.value = 24 + Math.random() * 14;
+  const vibAmt = ac.createGain();
+  vibAmt.gain.value = 55;
+  vib.connect(vibAmt);
+  vibAmt.connect(osc.frequency);
+  osc.connect(bp);
+  osc.start(now);
+  osc.stop(now + dur + 0.05);
+  vib.start(now);
+  vib.stop(now + dur + 0.05);
+
+  // airy noise layer through the same sweeping bandpass + envelope
+  if (!screamNoise) {
+    const len = Math.floor(ac.sampleRate * 1.0);
+    screamNoise = ac.createBuffer(1, len, ac.sampleRate);
+    const data = screamNoise.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * 0.6;
+  }
+  const noise = ac.createBufferSource();
+  noise.buffer = screamNoise;
+  noise.connect(bp);
+  noise.start(now);
+  noise.stop(now + dur + 0.05);
+}
+
 export function audioMuted(): boolean {
   return muted;
 }

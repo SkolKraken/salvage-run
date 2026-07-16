@@ -1064,7 +1064,10 @@ export class Game {
       if (!victim) {
         const s = this.structureAt(pos);
         if (s) {
-          const dmg = this.damageAfterCover(e.intent.damage, pos);
+          // Structures are fireproof — incendiary payloads can't hurt them.
+          const dmg = e.weapons[0]?.groundFire
+            ? 0
+            : this.damageAfterCover(e.intent.damage, pos);
           const killed = this.applyStructureDamage(s, dmg);
           hits.push({
             id: s.id,
@@ -1117,6 +1120,7 @@ export class Game {
     if (gf) {
       for (const pos of tiles) {
         if (this.terrainAt(pos) !== "open") continue;
+        if (this.structureAt(pos)) continue; // no flames under the beacon
         const row = this.terrain[pos.y];
         if (!row) continue;
         row[pos.x] = gf;
@@ -1350,6 +1354,8 @@ export class Game {
     for (const target of targets) {
       const proj = projectedHp.get(target.id) ?? target.hp;
       if (proj <= 0) continue;
+      // Incendiary weapons can't hurt fireproof structures — don't aim at them.
+      if (target.isStructure && gun.groundFire) continue;
       for (const from of options) {
         if (manhattan(from, target.pos) > gun.range) continue;
         if (!this.hasLineOfFire(from, target.pos, arcing)) continue;
