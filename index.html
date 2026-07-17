@@ -47,13 +47,22 @@
         <div id="mission-intro" class="overlay hidden">
           <div class="intro-kicker" id="intro-kicker"></div>
           <div class="intro-title" id="intro-title"></div>
-          <div class="intro-flavor" id="intro-flavor"></div>
+          <div class="intro-grid">
+            <div class="intro-terminal" id="intro-terminal">
+              <div class="term-head">RSV MAGPIE &#9656; FRM. CORBIN &#9656; ENCRYPTED</div>
+              <div class="term-body"><span id="intro-comms"></span><span class="term-cursor">&#9608;</span></div>
+            </div>
+            <div class="intro-recon">
+              <div class="recon-head">ORBITAL RECON &#9656; LIVE</div>
+              <canvas id="recon" width="192" height="192"></canvas>
+            </div>
+          </div>
           <div class="intro-objective" id="intro-objective"></div>
           <div class="intro-enemies" id="intro-enemies"></div>
           <div class="intro-waves hidden" id="intro-waves">
-            &#9888; Enemy reinforcements expected &mdash; watch for drop zones
+            &#9888; Feral reinforcements inbound &mdash; expect drop zones
           </div>
-          <button id="intro-go" class="btn primary">LAUNCH</button>
+          <button id="intro-go" class="btn primary">ACKNOWLEDGE &amp; DROP</button>
         </div>
 
         <div id="manual" class="overlay hidden">

@@ -72,7 +72,10 @@ const bayDeploy = document.getElementById("bay-deploy") as HTMLButtonElement;
 const introEl = document.getElementById("mission-intro") as HTMLDivElement;
 const introKicker = document.getElementById("intro-kicker") as HTMLDivElement;
 const introTitle = document.getElementById("intro-title") as HTMLDivElement;
-const introFlavor = document.getElementById("intro-flavor") as HTMLDivElement;
+const introComms = document.getElementById("intro-comms") as HTMLSpanElement;
+const introTerminal = document.getElementById("intro-terminal") as HTMLDivElement;
+const reconCanvas = document.getElementById("recon") as HTMLCanvasElement;
+const reconCtx = reconCanvas.getContext("2d")!;
 const introObjective = document.getElementById("intro-objective") as HTMLDivElement;
 const introEnemies = document.getElementById("intro-enemies") as HTMLDivElement;
 const introWaves = document.getElementById("intro-waves") as HTMLDivElement;
@@ -331,20 +334,115 @@ function renderDeploySlots(): void {
 const MISSION_INTROS = [
   {
     title: "SCRAPFALL",
-    flavor:
-      "The crash basin is crawling with scavenger frames. Sweep it clean and stake the claim.",
+    comms:
+      "Something came down hard last night, and the ferals got to it first. Our ledger's short, wreckers, and the Combine doesn't carry debts. Sweep the field. They still fight by Doctrine — read the tells and they'll never touch you. That's all the mercy the Basin has.",
   },
   {
     title: "CACHE GRAB",
-    flavor:
-      "Recon flagged an intact core cache dug into the wreck line upfield. It will be guarded.",
+    comms:
+      "Scanner's got a sealed cache upfield. Intact hearts — enough to clear half of what we owe. Understand something: the second you pull that crate, every feral in the Basin hears it sing. Grab it, run for the exfil line, and don't stop for anyone who falls.",
   },
   {
     title: "DUST-OFF",
-    flavor:
-      "The salvage barge needs time to spool its lift engines. Hold the field until it screams in.",
+    comms:
+      "This is it. Magpie's dropping through cloud and she can't set down without that beacon. If the mast falls there's no second approach — the Combine doesn't send rescue, it sends the next crew. Keep it standing until dust-off. Then we go home.",
   },
 ];
+
+// --- Comms typewriter ---
+let typeTimer: number | null = null;
+let typeText = "";
+
+function typeComms(text: string): void {
+  if (typeTimer !== null) window.clearInterval(typeTimer);
+  typeText = text;
+  introComms.textContent = "";
+  let i = 0;
+  typeTimer = window.setInterval(() => {
+    i += 2;
+    introComms.textContent = text.slice(0, i);
+    if (i >= text.length) {
+      if (typeTimer !== null) window.clearInterval(typeTimer);
+      typeTimer = null;
+    }
+  }, 24);
+}
+
+// click the terminal to skip to the full brief
+introTerminal.addEventListener("click", () => {
+  if (typeTimer === null) return;
+  window.clearInterval(typeTimer);
+  typeTimer = null;
+  introComms.textContent = typeText;
+});
+
+// --- Orbital recon map ---
+let introShownAt = 0;
+const RECON_CELL = 16;
+const RECON_TERRAIN: Record<string, string> = {
+  open: "#0a1611",
+  wreckage: "#3a4450",
+  cover: "#2e3d52",
+  fire: "#7a3410",
+  greenfire: "#14532d",
+  pit: "#04060a",
+  water: "#173a5e",
+};
+
+function drawRecon(): void {
+  const rc = reconCtx;
+  const size = GRID * RECON_CELL;
+  rc.fillStyle = "#04120a";
+  rc.fillRect(0, 0, size, size);
+  const sweep = Math.min(1, (time - introShownAt) / 2.2);
+  const revealPx = sweep * size;
+
+  for (let y = 0; y < GRID; y++) {
+    if (y * RECON_CELL > revealPx) break;
+    for (let x = 0; x < GRID; x++) {
+      rc.fillStyle = RECON_TERRAIN[game.terrainAt({ x, y })] ?? "#0a1611";
+      rc.fillRect(x * RECON_CELL, y * RECON_CELL, RECON_CELL - 1, RECON_CELL - 1);
+    }
+  }
+
+  const dot = (p: Vec, color: string, r: number): void => {
+    if (p.y * RECON_CELL > revealPx) return;
+    rc.fillStyle = color;
+    rc.beginPath();
+    rc.arc(
+      p.x * RECON_CELL + RECON_CELL / 2,
+      p.y * RECON_CELL + RECON_CELL / 2,
+      r,
+      0,
+      Math.PI * 2,
+    );
+    rc.fill();
+  };
+
+  const pulse = 0.55 + 0.45 * Math.sin(time * 4);
+  // hostile pings
+  for (const e of game.enemies()) {
+    dot(e.pos, `rgba(248,113,113,${pulse})`, 3.5);
+  }
+  // entry vector (your lance)
+  for (const p of game.players()) {
+    dot(p.pos, "#38bdf8", 3);
+  }
+  // objective markers
+  if (game.objective.tile) dot(game.objective.tile, `rgba(251,191,36,${pulse})`, 4);
+  for (const t of game.exfilTiles) dot(t, "rgba(74,222,128,0.8)", 3);
+  for (const s of game.structures) {
+    if (s.hp > 0) dot(s.pos, `rgba(251,191,36,${pulse})`, 4);
+  }
+
+  // scan line
+  if (sweep < 1) {
+    rc.fillStyle = "rgba(127,220,174,0.65)";
+    rc.fillRect(0, revealPx - 1, size, 2);
+    rc.fillStyle = "rgba(127,220,174,0.12)";
+    rc.fillRect(0, Math.max(0, revealPx - 14), size, 14);
+  }
+}
 
 function objectiveBrief(): string {
   const o = game.objective;
@@ -365,9 +463,11 @@ function showMissionIntro(): void {
   const idx = game.mission - 1;
   const intro = MISSION_INTROS[idx] ?? MISSION_INTROS[0];
   const def = MISSION_DEFS[idx] ?? MISSION_DEFS[0];
-  introKicker.textContent = `MISSION ${game.mission} OF ${MISSIONS_PER_RUN}`;
+  introKicker.textContent =
+    `DROP ${game.mission} OF ${MISSIONS_PER_RUN} · CINDER BASIN`;
   introTitle.textContent = intro.title;
-  introFlavor.textContent = intro.flavor;
+  introShownAt = time;
+  typeComms(intro.comms);
   introObjective.textContent = objectiveBrief();
 
   const counts = new Map<EnemyKind, number>();
@@ -934,8 +1034,8 @@ function showEndOverlay(): void {
   overlayText.textContent = win ? "RUN COMPLETE" : "RUN FAILED";
   overlayText.className = "overlay-text " + (win ? "win" : "lose");
   overlaySub.textContent = win
-    ? `All ${MISSIONS_PER_RUN} missions cleared.`
-    : `${game.failReason ?? "The lance is down."} Mission ${game.mission} of ${MISSIONS_PER_RUN}.`;
+    ? "Claim filled. The Magpie breaks orbit with all hands accounted for."
+    : `${game.failReason ?? "The lance is down."} The Basin keeps its own. (Drop ${game.mission} of ${MISSIONS_PER_RUN})`;
   overlay.classList.remove("hidden");
 }
 
@@ -2121,6 +2221,7 @@ function frame(now: number): void {
   last = now;
   update(dt);
   render();
+  if (!introEl.classList.contains("hidden")) drawRecon();
   requestAnimationFrame(frame);
 }
 
