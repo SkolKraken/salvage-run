@@ -1193,9 +1193,10 @@ export class Game {
       this.phase = "runFailed";
       return;
     }
-    // Kill-all clears any mission without endless reinforcements; otherwise
-    // the objective is the only way out.
+    // Clearing the board only wins kill-all missions. Extract and survive
+    // objectives must be completed on their own terms.
     const boardCleared =
+      this.objective.kind === "killAll" &&
       this.enemies().length === 0 &&
       this.pendingSpawns.length === 0 &&
       !missionDef(this.mission).recurringWave;
